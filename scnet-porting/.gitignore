@@ -1,0 +1,14 @@
+# 输入：Windows 安装包（自行放入 win/，不入库）
+win/
+
+# 中间产物（解包/缓存/stage，随时可重建）
+.migrate/
+.cache/
+
+# 构建产物
+dist/
+
+# 下载的压缩包缓存
+*.zip
+
+*.exe

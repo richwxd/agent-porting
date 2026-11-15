@@ -1,0 +1,13 @@
+#!/bin/bash
+# scnet-client postrm：卸载清理
+set -e
+
+# 菜单数据库刷新（图标在 /opt/scnet-client/，无需 gtk-update-icon-cache）
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications 2>/dev/null || true
+fi
+if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 --noincremental 2>/dev/null || true
+fi
+
+exit 0

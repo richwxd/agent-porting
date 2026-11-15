@@ -1,0 +1,26 @@
+#!/bin/bash
+# scnet-client 启动包装（.deb 安装到 /opt/scnet-client/bin/scnet-client）
+# 调用 /opt/scnet-client/scnet-client，做运行时环境清理
+
+set -u
+
+ELECTRON_BIN="/opt/scnet-client/scnet-client"
+
+# 环境清理：
+# - 清除 LD_LIBRARY_PATH（打包器注入的 libstdc++ 缺 GPU 驱动符号 → GPU 进程 LAUNCH_FAILED）
+# - 短 TMPDIR（Electron SingletonSocket 路径过长会 FATAL: Socket path too long）
+# - 保留 DBUS_SESSION_BUS_ADDRESS（keyring/kwallet）与 XDG_RUNTIME_DIR（Wayland socket）
+unset LD_LIBRARY_PATH
+unset LIBGL_DRIVERS_PATH
+export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+export TMPDIR="/tmp"
+mkdir -p "${TMPDIR}" 2>/dev/null || true
+
+# 若 chrome-sandbox 未 setuid（postinst 失败等），回退 --no-sandbox
+if [ -u "${ELECTRON_BIN%/*}/chrome-sandbox" ]; then
+    exec "${ELECTRON_BIN}" "$@"
+else
+    exec "${ELECTRON_BIN}" --no-sandbox "$@"
+fi

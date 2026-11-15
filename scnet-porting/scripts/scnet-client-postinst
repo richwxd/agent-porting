@@ -1,0 +1,24 @@
+#!/bin/bash
+# scnet-client postinst：安装后设置 chrome-sandbox setuid、刷新菜单数据库
+set -e
+
+SANDBOX="/opt/scnet-client/chrome-sandbox"
+
+# chrome-sandbox setuid 4755（Electron SUID sandbox 必需）
+if [ -f "${SANDBOX}" ]; then
+    chown root:root "${SANDBOX}" 2>/dev/null || true
+    chmod 4755 "${SANDBOX}" 2>/dev/null || true
+    echo "chrome-sandbox 已设置为 setuid 4755"
+fi
+
+# 菜单数据库刷新（KDE/GTK）——图标在 /opt/scnet-client/，无需 gtk-update-icon-cache
+if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 --noincremental 2>/dev/null || true
+elif command -v kbuildsycoca5 >/dev/null 2>&1; then
+    kbuildsycoca5 --noincremental 2>/dev/null || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications 2>/dev/null || true
+fi
+
+exit 0

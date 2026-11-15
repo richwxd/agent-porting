@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=计算服务
+GenericName=计算服务
+Comment=SCNet 客户端（Linux x64）
+Exec=/opt/scnet-client/bin/scnet-client %U
+Icon=/opt/scnet-client/scnet-client.png
+Terminal=false
+Categories=Development;
+StartupNotify=true
+StartupWMClass=scnet-client
+Keywords=scnet;计算服务;云计算;HPC;
