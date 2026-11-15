@@ -1,0 +1,3 @@
+[submodule "scnet-porting"]
+	path = scnet-porting
+	url = /home/wxd/Workspace/Projects/Node/agent-porting/scnet-porting
