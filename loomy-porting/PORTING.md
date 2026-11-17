@@ -58,6 +58,7 @@ loomy-porting/
 | 重命名 electron→loomy | 让 `app.isPackaged=true`，避免 dev 分支加载错误 |
 | 迁移业务资源 | `app.asar` + `app.asar.unpacked` + `.env.prod` 等，跨平台复用 |
 | 迁移纯 JS 目录 | 跳过 win/darwin 专属二进制目录（见下表） |
+| 下载 OpenCode CLI | npm `opencode-linux-x64`（默认 1.14.22）→ `resources/opencode/linux-x64/opencode` |
 | 下载 Node | 独立 node-runtime（默认 v26.13.0）→ `resources/node-runtime/bin/node` |
 | 下载 ffmpeg | 静态 linux-x64 → `resources/ffmpeg-static/ffmpeg` |
 | 重打包 asar | 注入 `@napi-rs/keyring-linux-x64-gnu`，替换 unpacked 里的 ffmpeg 为 Linux ELF |
@@ -75,6 +76,7 @@ loomy-porting/
 │   ├── app.asar.unpacked/       原生 .node（含注入的 keyring-linux）
 │   ├── node-runtime/bin/node    独立 Node v26.13.0（MCP/脚本用）
 │   ├── ffmpeg-static/ffmpeg     Linux 静态 ffmpeg
+│   ├── opencode/linux-x64/opencode  OpenCode CLI v1.14.22（AI 运行时）
 │   └── ...纯 JS 运行时目录
 /usr/bin/loomy                   启动包装器（排除有害 env）
 /usr/share/applications/loomy.desktop
@@ -103,11 +105,24 @@ loomy-porting/
 | Electron | 必须放 zip | 主运行时 |
 | node-runtime | 自动下载 | MCP/脚本用 |
 | ffmpeg-static | 自动下载 | 音频转码 |
+| OpenCode CLI | 自动下载 | AI 运行时（`opencode serve`），npm `opencode-linux-x64` 1.14.22；缺了报「OpenCode 二进制文件不存在」 |
 | @napi-rs/keyring | 自动注入 | 钥匙串，降级可用 |
 | msgpackr-extract | 跳过 | 纯 JS 回退 |
 | @napi-rs/canvas | 跳过 | app 代码未 import |
 | local-model/uv/python-archive | 跳过 | 降级系统 Python/uv |
 | wecom/dingtalk/lark CLI | 跳过 | 无 Linux 版，降级 |
+
+## 首次启动行为（几分钟「无反应」属正常）
+
+首次启动（或配置目录依赖缺失时），`opencode serve` 后台执行
+`npm install @opencode-ai/plugin` 到 `~/.config/loomy-opencode[/opencode]`，
+期间**所有 API 请求排队等待**（实测约 4 分钟，视网络而定），UI 表现为「不报错但没反应」。
+日志（`~/.local/share/loomy/opencode/log/`）可能出现
+`background dependency install failed … ReleaseError: token mismatch`——
+安装结果已落盘，只是释放文件锁时报错，无害。
+
+依赖装好后（`~/.config/loomy-opencode*/node_modules` 与 package-lock 一致），
+之后每次启动秒级就绪，不再触发安装。若某次启动又卡住，等它跑完即可，无需重装。
 
 ## 构建依赖
 

@@ -70,9 +70,18 @@ checks = [
     (b'if (platform === "linux") {',              "补丁A resolveTrayIconPath linux 分支"),
     (b'["win32", "linux"].includes(process.platform) ? resolveTrayIconPath', "补丁B 主窗口 icon 解析"),
     (b'import_electron13.Menu.setApplicationMenu(import_electron13.Menu.buildFromTemplate([', "补丁C Linux 中文菜单栏"),
+    (b'showOpenDialog( {',                        "补丁D showOpenDialog 去 parent(带空格形式)"),
+    (b'showSaveDialog( {',                        "补丁D showSaveDialog 去 parent"),
     (b'platform === "win32" ? {',                 "原样: 标题栏仍按 win32 判定(不改)"),
 ]
 bad_n = 0
+# 补丁D 关键否定断言：不能再有带 parent 的对话框调用
+if data.count(b'showOpenDialog(window2,') != 0 or data.count(b'showSaveDialog(window2,') != 0:
+    print("  \033[31m✗\033[0m 补丁D 仍有带 parent 的对话框调用 (open=%d, save=%d)" % (
+        data.count(b'showOpenDialog(window2,'), data.count(b'showSaveDialog(window2,'))))
+    bad_n += 1
+else:
+    print("  \033[32m✓\033[0m 补丁D 无带 parent 的对话框调用")
 for pat, name in checks:
     n = data.count(pat)
     if n == 1:

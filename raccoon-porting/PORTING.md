@@ -114,7 +114,7 @@ exe、安装步骤不适用）。Linux 原生升级请以官方 `linux/x64` feed
 | 官方 Linux deb | 版本**动态匹配**：精确同名 `商汤小浣熊-<winver>-amd64.deb` → `latest-linux.yml` 最新（当前 1.2.0）→ 1.0.38 兜底；作 **Linux 原生依赖唯一来源** |
 | 重命名 electron→raccoon-ai | 让 `app.isPackaged=true`，避免 dev 分支走错误入口 |
 | 迁移 resources | 跨平台目录原样拷；平台专属换 Linux 版（见下表） |
-| 重打包 app.asar | 打补丁①②③④ + A/B/C → 注入 `@esbuild/linux-x64` → `.node`/esbuild 解到 `app.asar.unpacked` |
+| 重打包 app.asar | 打补丁①②③④ + A/B/C + D → 注入 `@esbuild/linux-x64` → `.node`/esbuild 解到 `app.asar.unpacked` |
 | 图标/.desktop/DEBIAN | 官方 hicolor 全尺寸图标、启动包装器、以官方 .desktop 为底改 Exec、postinst/prerm |
 | 打包 deb | `dpkg-deb --build --root-owner-group` → `dist/`，清除 stage |
 
@@ -155,6 +155,26 @@ exe、安装步骤不适用）。Linux 原生升级请以官方 `linux/x64` feed
     「开发者工具」项，属预期。
 - **托盘**：原代码 `setupWindowsTray()` 是 win32-only，保持关闭（`try/catch` 内，
   不影响启动）。
+
+## 原生文件对话框（`patch-dialog-parent.sh`）
+
+- **问题**：Electron 在 Linux 的 `dialog.showOpenDialog(win, ...)` / `showSaveDialog(win, ...)`
+  传 parent window 时，把窗口的 Wayland surface 句柄传给 XDG portal 作为
+  `parent_window`（`file_dialog_linux_portal.cc`）；在 Wayland 下该句柄解析失败/为空，
+  portal 后端报 "Unhandled parent window type" / "Failed to associate portal window with
+  parent window"，**对话框不显示、Promise 永不 resolve** → 主界面被模态禁用，
+  表现为「点『选择项目目录』后无法关闭/返回主界面」。
+- **复现**（Electron 41.0.1，KDE Wayland **和** Xvfb X11 都复现）：
+  - 带 parent：`OPENING_DIALOG...` → 45s 超时，never resolved（挂死）
+  - 不带 parent：`OPENING_DIALOG_NO_PARENT...` → 4.8s 后 `DIALOG_RESOLVED {canceled:true}`
+    （锁屏自动取消；未锁屏时用户正常点选返回路径）
+  - `showMessageBox(win, ...)` 带不带 parent 都正常（~1s），不改。
+- **修复（补丁D）**：去掉第一参数 parent window → `showOpenDialog({...})`。
+  共 9 处（5 处 `showOpenDialog` + 4 处 `showSaveDialog`，含 `import_electron5` 的
+  export-logs）。代价是对话框不再严格模态（不锁主窗口），但 KDE portal 对话框默认浮层
+  置顶，可见性不受影响；挂死比非模态严重得多。
+- **验证**：`showOpenDialog(window2,` / `showSaveDialog(window2,` 在产物中必须为 **0 次**；
+  `showOpenDialog( {`=5、`showSaveDialog( {`=4。已加进 `verify-deb.sh` 补丁D 断言。
 
 ## 安装后布局
 

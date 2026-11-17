@@ -346,6 +346,8 @@ repack_asar() {
 
   bash "$ROOT/scripts/patch-update-check.sh" "$tree"
   bash "$ROOT/scripts/patch-window-linux.sh" "$tree"
+  # Linux/Wayland：去掉原生文件对话框的 parent window（Electron portal parent 传递失败→挂死）
+  bash "$ROOT/scripts/patch-dialog-parent.sh" "$tree"
 
   # esbuild：Windows 包只有 win32-x64，补 Linux 二进制（tsx 跑 TS 脚本用）
   local esb="$OFFICIAL_APP/resources/node_modules/@esbuild/linux-x64"

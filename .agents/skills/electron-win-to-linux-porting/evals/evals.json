@@ -1,0 +1,23 @@
+{
+  "skill_name": "electron-win-to-linux-porting",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我有个 Windows 的 Electron 应用（绿色版目录，带 resources/app.asar），想打成 Ubuntu 能装的 deb 包，参考 agent-porting 下 loomy-porting 的做法，帮我搞一个一键构建。",
+      "expected_output": "按一键升级契约搭建 win/ + scripts/{lib.sh,build-deb.sh} + .cache/.migrate/dist 布局；从 app.asar 读版本；electron 重命名；原生模块 unpack；输出 dist/*.deb",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "移植出来的包一启动就报错说找不到 xx 二进制（resources/opencode/linux-x64/opencode 这种路径），怎么修？",
+      "expected_output": "识别为硬校验而非降级路径；定位该二进制的 Linux 来源（npm 平台包/GitHub release），校验体积与 --version，补进构建脚本并注明来源",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "重打包 asar 之后 deb 体积从 183MB 涨到 290MB，而且装上跑不起来，说什么 node 模块加载失败。",
+      "expected_output": "怀疑 unpack 失败；指出 **/*.x glob 在点前缀路径下静默失效的坑；改用 *.{node,so,dll,exe} basename glob 重打，验证 unpacked 数量与文件清单",
+      "files": []
+    }
+  ]
+}
