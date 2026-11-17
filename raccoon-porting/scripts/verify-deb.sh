@@ -70,18 +70,49 @@ checks = [
     (b'if (platform === "linux") {',              "补丁A resolveTrayIconPath linux 分支"),
     (b'["win32", "linux"].includes(process.platform) ? resolveTrayIconPath', "补丁B 主窗口 icon 解析"),
     (b'import_electron13.Menu.setApplicationMenu(import_electron13.Menu.buildFromTemplate([', "补丁C Linux 中文菜单栏"),
-    (b'showOpenDialog( {',                        "补丁D showOpenDialog 去 parent(带空格形式)"),
-    (b'showSaveDialog( {',                        "补丁D showSaveDialog 去 parent"),
+    (b'!["win32", "linux"].includes(process.platform) || !tray || tray.isDestroyed()', "补丁E updateWindowsTrayMenu 门控(win32|linux)"),
+    (b'!["win32", "linux"].includes(process.platform) || tray && !tray.isDestroyed()', "补丁E setupWindowsTray 门控(win32|linux)"),
+    (b'["win32", "darwin", "linux"].includes(process.platform) && tray && !tray.isDestroyed()', "补丁E close 事件隐藏到托盘(含 linux)"),
+    (b'typeof tray !== "undefined" && tray && !tray.isDestroyed()', "补丁E window-all-closed 有托盘不退出"),
+    (b'shell.openPath(requestedPath).catch(() => {})', "补丁F① system 分支 fire-and-forget(不 await shell.openPath)"),
+    (b'electron_1.shell.openPath(directory).catch(() => {})', "补丁F② open-task-workspace fire-and-forget(不 await)"),
+    (b'electron_1.shell.openPath(dir).catch(() => {})', "补丁F③ open-runtime-directory fire-and-forget(不 await)"),
+    (b'electron_1.shell.openPath(entry.path).catch(() => {})', "补丁F④ 浏览器 external fire-and-forget(不 await)"),
+    (b'const quitForceTimer = setTimeout(() => {', "补丁G 退出超时兜底: quitForceTimer 定义"),
     (b'platform === "win32" ? {',                 "原样: 标题栏仍按 win32 判定(不改)"),
 ]
 bad_n = 0
 # 补丁D 关键否定断言：不能再有带 parent 的对话框调用
 if data.count(b'showOpenDialog(window2,') != 0 or data.count(b'showSaveDialog(window2,') != 0:
     print("  \033[31m✗\033[0m 补丁D 仍有带 parent 的对话框调用 (open=%d, save=%d)" % (
-        data.count(b'showOpenDialog(window2,'), data.count(b'showSaveDialog(window2,'))))
+        data.count(b'showOpenDialog(window2,'), data.count(b'showSaveDialog(window2,')))
     bad_n += 1
 else:
     print("  \033[32m✓\033[0m 补丁D 无带 parent 的对话框调用")
+# 补丁D 精确计数断言：patch-dialog-parent.sh 恰改 5 处 open + 4 处 save（带空格形式）
+if data.count(b'showOpenDialog( {') == 5 and data.count(b'showSaveDialog( {') == 4:
+    print("  \033[32m✓\033[0m 补丁D 去 parent 计数 (open=5, save=4)")
+else:
+    print("  \033[31m✗\033[0m 补丁D 去 parent 计数异常 (open=%d, save=%d)" % (
+        data.count(b'showOpenDialog( {'), data.count(b'showSaveDialog( {')))
+    bad_n += 1
+# 补丁F 否定断言：4 个 IPC handler 内不得再残留 await shell.openPath（会锁前端）
+for pat, name in [
+    (b'const error = await electron_1.shell.openPath(directory);', "补丁F② 无残留 await openPath(open-task-workspace)"),
+    (b'const error = await electron_1.shell.openPath(dir);', "补丁F③ 无残留 await openPath(open-runtime-directory)"),
+    (b'const error = await electron_1.shell.openPath(entry.path);', "补丁F④ 无残留 await openPath(浏览器 external)"),
+]:
+    if data.count(pat) == 0:
+        print(f"  \033[32m✓\033[0m {name}")
+    else:
+        print(f"  \033[31m✗\033[0m {name} (命中 {data.count(pat)} 次，应为 0)")
+        bad_n += 1
+# 补丁G 精确计数：quitForceTimer 的 clearTimeout 恰 2 处（then + catch）
+if data.count(b'clearTimeout(quitForceTimer)') == 2:
+    print("  \033[32m✓\033[0m 补丁G clearTimeout 计数 (2 处: then+catch)")
+else:
+    print("  \033[31m✗\033[0m 补丁G clearTimeout 计数异常 (命中 %d，应为 2)" % data.count(b'clearTimeout(quitForceTimer)'))
+    bad_n += 1
 for pat, name in checks:
     n = data.count(pat)
     if n == 1:

@@ -346,8 +346,14 @@ repack_asar() {
 
   bash "$ROOT/scripts/patch-update-check.sh" "$tree"
   bash "$ROOT/scripts/patch-window-linux.sh" "$tree"
+  # Linux：系统托盘（关窗隐藏到托盘，托盘可显示主界面/退出；patch-window-linux 已补图标路径）
+  bash "$ROOT/scripts/patch-tray-linux.sh" "$tree"
   # Linux/Wayland：去掉原生文件对话框的 parent window（Electron portal parent 传递失败→挂死）
   bash "$ROOT/scripts/patch-dialog-parent.sh" "$tree"
+  # Linux/Wayland：修复"打开当前目录"卡死（shell.openPath 挂起→IPC 不返回→前端锁定）
+  bash "$ROOT/scripts/patch-workspace-open-linux.sh" "$tree"
+  # Linux：修复托盘/窗口"退出"挂起（agent-host 清理永不 resolve→close() 无超时→永不退出）
+  bash "$ROOT/scripts/patch-quit-timeout-linux.sh" "$tree"
 
   # esbuild：Windows 包只有 win32-x64，补 Linux 二进制（tsx 跑 TS 脚本用）
   local esb="$OFFICIAL_APP/resources/node_modules/@esbuild/linux-x64"

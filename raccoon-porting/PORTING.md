@@ -18,7 +18,11 @@ raccoon-porting/
 │   ├── lib.sh                # 公共函数（解包/迁移/注入/打包）
 │   ├── patch-update-check.sh # 升级检测 4 补丁（始终按 Windows 版本）
 │   ├── patch-window-linux.sh # 窗口/任务栏图标/菜单栏 3 补丁
-│   ├── verify-deb.sh         # 产物校验（28 项断言）
+│   ├── patch-tray-linux.sh   # Linux 系统托盘 4 补丁（关窗隐藏到托盘，托盘可显示/退出）
+│   ├── patch-dialog-parent.sh # 原生文件对话框去 parent window 9 补丁（Wayland 挂死）
+│   ├── patch-workspace-open-linux.sh # "打开当前目录"卡死 4 补丁（4 处 shell.openPath → fire-and-forget）
+│   ├── patch-quit-timeout-linux.sh # 托盘/窗口"退出"挂起 1 补丁（清理超时强制退出）
+│   ├── verify-deb.sh         # 产物校验（关键文件、平台替换、4+3+4+2+1 补丁、无残留 .node）
 │   └── smoke-test.sh         # 安装 + 启动 + 升级检测日志检查
 ├── dist/                     # 产物 deb
 ├── .cache/                   # 下载缓存（Electron/官方 deb/pandoc，可删）
@@ -49,7 +53,7 @@ raccoon-porting/
 
    ```bash
    ./scripts/build-deb.sh    # 构建（三个版本号全部动态匹配，无需手填）
-   ./scripts/verify-deb.sh   # 28 项断言：关键文件、平台替换、4+3 补丁、无残留 .node
+   ./scripts/verify-deb.sh   # 29 项断言：关键文件、平台替换、4+3+4+2+1 补丁、无残留 .node
    sudo dpkg -i dist/raccoon-ai_<版本>_amd64.deb
    ./scripts/smoke-test.sh   # 安装 → 启动 → 等升级检测 → 汇报 raccoon.log
    ```
@@ -153,8 +157,17 @@ exe、安装步骤不适用）。Linux 原生升级请以官方 `linux/x64` feed
   - 注：官方模板本身没有「帮助」菜单（关于在「文件」下），此处按需求单列「帮助」、
     「关于」放其下；本包 `raccoonSignedRelease=true` → devtools 策略运行时会剥掉
     「开发者工具」项，属预期。
-- **托盘**：原代码 `setupWindowsTray()` 是 win32-only，保持关闭（`try/catch` 内，
-  不影响启动）。
+- **托盘（补丁E，`patch-tray-linux.sh`）**：原代码 `setupWindowsTray()` 是 win32-only
+  （`process.platform !== "win32"` 直接 return），`close` 事件也只对 win32/darwin 有托盘时
+  隐藏到托盘，`window-all-closed` 无条件 `app.quit()` → Linux 上**关窗即整个退出**、
+  无托盘、无后台进程。本工程把门控放宽为 `win32 || linux`，并让 `close` 事件在 Linux 有
+  托盘时也 `hideWindowToTray()`（而非 `app.quit()`）；`window-all-closed` 仅在**无托盘**
+  时退出（托盘创建失败兜底，避免无头僵尸进程）。行为：点窗口 X → 隐藏到托盘继续后台
+  运行，托盘单击显示主界面，右键菜单「显示主界面 / 退出」。图标走 `resolveTrayIconPath`
+  的 linux 分支（`resources/assets/icon.png`，patch-window-linux 已迁入）。
+  - `setupMenuBarShortcut`（darwin 菜单栏专用）**不改**，macOS 行为不受影响。
+  - 注：Linux 托盘图标用 `icon.png`（1024×1024，Tray 自动缩放）；KDE 托盘单击/右键
+    行为由 Electron 的 `tray.on("click")` + `setContextMenu` 提供。
 
 ## 原生文件对话框（`patch-dialog-parent.sh`）
 
@@ -175,6 +188,58 @@ exe、安装步骤不适用）。Linux 原生升级请以官方 `linux/x64` feed
   置顶，可见性不受影响；挂死比非模态严重得多。
 - **验证**：`showOpenDialog(window2,` / `showSaveDialog(window2,` 在产物中必须为 **0 次**；
   `showOpenDialog( {`=5、`showSaveDialog( {`=4。已加进 `verify-deb.sh` 补丁D 断言。
+
+## "打开当前目录"卡死（`patch-workspace-open-linux.sh`）
+
+- **症状**：任务工作区选择器里点「打开当前目录」/「在资源管理器中打开」（openerId=system），
+  文件管理器弹出后**程序界面无法操作**，关闭文件管理器也收不回状态。
+- **根因**：主进程 **4 处 IPC handler / dispatch 内 `await electron.shell.openPath(path)`**。
+  **实测（Electron 41.0.1 / KDE Wayland）：`shell.openPath()` 的 Promise 永不 resolve（挂起）**
+  ——内部经 xdg-open/gio 启动文件管理器后，resolve 依赖的内部回调在 Wayland 下不触发。
+  对照 `shell.openExternal()` 正常。
+- **链路**（以「打开当前目录」按钮为例）：
+  - 前端按钮 `onClick` → `S(() => desktopClient.openTaskWorkspace({workspaceId}))`
+    —— `S` 是 busy 控制函数：`j.busy=!0; u(!0)`（进入"禁止输入"）→ `await t()` → `finally{ j.busy=!1; u(!1) }`。
+  - 主进程 `desktop-client:open-task-workspace` handler（`registerWorkspaceHandlers.js`）内
+    `await shell.openPath(directory)` **挂起** → IPC `ipc.invoke` 永不返回。
+  - 前端 `S` 的 `await t()` 永不完成 → `finally` 永不执行 → `u(!1)` 永不调用 →
+    **界面永久"禁止输入"**（文件管理器已弹出，但界面收不回状态）。
+  - 同理 `render-runtime:open-runtime-directory`（`registerRuntimeHandlers.js`）、
+    浏览器"在资源管理器中打开"（`embeddedBrowser.js`）的 `await shell.openPath` 也会锁界面。
+- **修复（补丁F，4 处）**：全部改为 **fire-and-forget**：`shell.openPath(path).catch(() => {})`
+  不 await，dispatch 成功即立即返回（文件管理器在后台打开），IPC 立即返回，前端 `finally`
+  执行、`u(!1)` 恢复，界面立即恢复。仅 Linux 生效（`process.platform !== "linux"` 时原样返回），
+  Windows/macOS 行为不变。
+  1. `build/electron/main/workspace/directoryOpeners.js` — `openDirectoryWithOpener` system 分支
+     （"在资源管理器中打开"/文件动作菜单）
+  2. `build/electron/main/client/workspace/registerWorkspaceHandlers.js` — **「打开当前目录」按钮**
+     （`desktop-client:open-task-workspace`）
+  3. `build/electron/main/client/bootstrap/registerRuntimeHandlers.js` — 渲染组件"打开目录"
+     （`render-runtime:open-runtime-directory`）
+  4. `build/electron/main/client/browser/embeddedBrowser.js` — 浏览器"在资源管理器中打开"
+     （`BROWSER_EXTERNAL`）
+- **验证**：`shell.openPath(...).catch(() => {})` 各 1 次（4 处）+ 否定断言 IPC handler 内
+  无残留 `await ... openPath`；已加进 `verify-deb.sh` 补丁F 断言（正向 4 + 否定 3）。
+  实测构建后 verify 全绿，冒烟启动正常。
+
+## 托盘/窗口"退出"挂起（`patch-quit-timeout-linux.sh`）
+
+- **症状**：系统托盘右键菜单点「退出」（或窗口关闭触发 quit）后，**应用未真正退出**，
+  主进程与后台进程（box-agent 等）仍存活，界面无反应。
+- **根因**：托盘「退出」项 `click: () => app.quit()` → `before-quit` 被 `shutdown.beforeQuit`
+  拦截（`event.preventDefault()`）→ 走 `shutdown.quit()` → `await close()`。
+  **Linux 下 `createClientShutdown` 的 `close()` 走 `!bounded` 分支（无超时）**——`SHUTDOWN_TIMEOUT_MS`
+  只用于 win32/darwin。`options.close()` 串行清理资源，实测**卡在 `agent-host` 的
+  `host.close()`（永不 resolve）**，日志停在 `cleanup started { resource: 'agent-host' }`，
+  进程仍存活（实测 PID 50 分钟后仍 `Sl` 状态）。
+- **链路**：`app.quit()` 被 beforeQuit 拦截 → `quit()` → `await close()`（Linux 无超时）→
+  `options.close()` 清理挂起 → `close()` 永不完成 → `quit().then` 永不执行 → `options.quit()`
+  （真正的 `app.quit()`）永不调用 → 进程不退出。
+- **修复（补丁G）**：`quit()` 启动清理后设 **8 秒强制退出兜底** `quitForceTimer`：
+  若清理挂起（`quitAllowed` 未置位）→ `options.forceQuit()`（`app.exit(0)`）强制退出。
+  正常路径不受影响：`close()` 完成后 `clearTimeout`，`catch` 里也 `clearTimeout`（允许重试）。
+- **验证**：`const quitForceTimer = setTimeout(() => {` 定义 1 次 + `clearTimeout(quitForceTimer)` 2 次
+  （then+catch）；已加进 `verify-deb.sh` 补丁G 断言。实测日志证明 `agent-host` 清理挂起为根因。
 
 ## 安装后布局
 
