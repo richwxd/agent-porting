@@ -1,12 +1,12 @@
 # SCNet 计算服务客户端 Windows → Linux 移植（deb 分发，dpkg 升级）
 
-把 `win/` 里的 Windows 绿色版（Electron 壳 + `resources/`）重打包为自包含 `/opt/scnet-client` 的 Linux deb。应用本体是预构建产物（asar 内无 TS 源码，`package.json` 的 `main` 指向编译好的 `dist-electron/main/index.js`），移植不需要源码。Windows 侧更新 = 换 `win/` 重跑一条命令，dpkg 直接覆盖升级。
+把 `win/` 里的 Windows 绿色版（Electron 壳 + `resources/`，或直接放 NSIS 安装包 `SCNet-4.1.0-x64.exe`，构建时自动解包）重打包为自包含 `/opt/scnet-client` 的 Linux deb。应用本体是预构建产物（asar 内无 TS 源码，`package.json` 的 `main` 指向编译好的 `dist-electron/main/index.js`），移植不需要源码。Windows 侧更新 = 换 `win/` 重跑一条命令，dpkg 直接覆盖升级。
 
 ## 项目结构
 
 ```
 scnet-porting/
-├── win/                        # 输入：Windows 绿色版（计算服务.exe + resources/），整体替换，不入库
+├── win/                        # 输入：Windows 绿色版（计算服务.exe + resources/）或 NSIS 安装包 exe，整体替换，不入库
 ├── scripts/
 │   ├── build-deb.sh            # 一键构建：win/ → dist/scnet-client_<ver>_amd64.deb
 │   ├── lib.sh                  # 构建辅助函数（与 raccoon/loomy 共享约定）
@@ -21,7 +21,7 @@ scnet-porting/
 
 ## 快速开始（升级流程）
 
-1. 用新版 Windows 绿色版**整体替换** `win/`（保持 `win/resources/app.asar` 就位）
+1. 用新版 Windows 绿色版**整体替换** `win/`（保持 `win/resources/app.asar` 就位）；直接放 `SCNet-<ver>-x64.exe` 安装包也行——检测到缺 `resources/` 时 `build-deb.sh` 自动 7z 两段式解包到 `.migrate/win-app`（每次重建，换 exe 不残留旧 `resources/`）
 2. `./scripts/build-deb.sh`
 3. `sudo dpkg -i dist/scnet-client_<ver>_amd64.deb`
 
@@ -29,9 +29,10 @@ scnet-porting/
 
 ## 脚本做了什么
 
+0. **输入解包**：`win/resources/app.asar` 缺失且 `win/` 下有 exe 时，`7z x` 解 NSIS 外层 → 插件目录里的 `app-64.7z` → 应用目录（每次重建 `.migrate/win-app`）。
 1. **Electron Linux 运行时**：`prepare_electron`（lib.sh）→ 优先 `.cache/electron-v45.2.3-linux-x64/` 已解包缓存，其次 `.cache/*.zip`，否则镜像下载（npmmirror → huaweicloud → github），并始终用 github 官方 `SHASUMS256.txt` 做 sha256 校验。解包后**二进制改名 `electron` → `scnet-client`**。
 2. **resources/ 迁移**：rsync 复制 `win/resources/`，剔除 Windows 平台件（`elevate.exe`、`bin/uv.exe`、`agent-browser/agent-browser.exe` 及原 asar），换入 linux 版 `bin/uv`、`agent-browser/agent-browser`（见平台依赖矩阵）。
-3. **app.asar 重打包**：`asar extract` 解出 win 树（自动合并 `app.asar.unpacked`）→ 确定性叠加 `.cache/inject/` 注入集 → `asar pack --unpack '**/*.{node,so,dll,exe}' --unpack-dir '**/node-pty/prebuilds'`。产出的 asar 树（路径 + 逐文件 md5）与旧手工流程一致，已验证。
+3. **app.asar 重打包**：`asar extract` 解出 win 树（自动合并 `app.asar.unpacked`）→ 确定性叠加 `.cache/inject/` 注入集 → 追加 `scripts/linux-window-controls.js` 到 `dist-electron/preload/index.js`（Linux 主窗口右上角最小化/最大化/关闭三按钮；Windows 靠原生 titleBarOverlay，Linux 无 overlay 且 frameless，渲染层自带 WindowTools 只在登录页渲染）→ 追加 `scripts/linux-auto-login.js` 到 preload、`scripts/linux-auto-login-store.js` 到 `dist-electron/main/index.js`（服务端会话约一天失效、401 清 accessToken 后启动逻辑直接 skipped ⇒ 每天要手工登录；注入的 preload 拦截 `auth.login` 存下入参、监听 `auth.session-expired` 并在启动时用 `auth.refresh-snapshot` 探针兜底重登；**safeStorage 是主进程专属模块、preload 取不到**，故加解密放在主进程侧新通道 `scnet-porting:auto-login`，凭据写 `<userData>/auto-login.json` 0600，手工退出后抑制直到下次手工登录；两处都各自 `node --check`）→ `asar pack --unpack '**/*.{node,so,dll,exe}' --unpack-dir '**/node-pty/prebuilds'`。产出的 asar 树（路径 + 逐文件 md5）与旧手工流程一致，已验证。
 4. **deb 装配**：`/opt/scnet-client` 绿色布局 + desktop + 图标 + DEBIAN（postinst 设 chrome-sandbox setuid 4755 并刷新菜单），`dpkg-deb --root-owner-group` 出包到 `dist/`。
 
 > 历史决策更正：早期方案（DELIVERY.md）用 Node `createPackageWithOptions` 重打包，理由是「CLI --unpack glob 不可靠」。实测 asar CLI v3.2.0 支持 glob 且产出一致，现行流水线用 CLI；Node 打包脚本（pack_linux.js）作废，不再需要。

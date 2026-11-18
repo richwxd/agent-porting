@@ -13,9 +13,25 @@ INJECT="$ROOT/.cache/inject"
 LINUX_BIN="$ROOT/.cache/linux-bin"
 OUT_DIR="$ROOT/dist"
 
-need python3 asar dpkg-deb curl unzip rsync
+need python3 asar dpkg-deb curl unzip rsync 7z
 
 # --- 0) 输入 / 注入集校验 ---
+# win/ 放的是 NSIS 安装包（SCNet-<ver>-x64.exe）时自动解出绿色版：
+# 两段式外层 $PLUGINSDIR/app-64.7z → 应用目录（与 raccoon-porting 同款）。
+# 解到 .migrate/win-app 而非 win/：换 exe 重跑时强制重建，避免旧 resources 残留。
+if [ ! -f "$WIN/resources/app.asar" ]; then
+  EXE="$(ls -t "$WIN"/*.exe 2>/dev/null | head -1 || true)"
+  [ -n "$EXE" ] || die "win/ 下既无 resources/app.asar 也未找到安装包 exe"
+  log "解包 Windows 安装包: $(basename "$EXE")"
+  NSIS="$ROOT/.migrate/nsis"
+  rm -rf "$NSIS" "$ROOT/.migrate/win-app"
+  mkdir -p "$NSIS"
+  run_clean 7z x -y "-o$NSIS" "$EXE" >/dev/null || die "7z 解包安装包外层失败"
+  APP7Z="$NSIS/\$PLUGINSDIR/app-64.7z"
+  [ -f "$APP7Z" ] || die "未找到 \$PLUGINSDIR/app-64.7z（安装包结构可能已变化）"
+  run_clean 7z x -y "-o$ROOT/.migrate/win-app" "$APP7Z" >/dev/null || die "7z 解包应用层失败"
+  WIN="$ROOT/.migrate/win-app"
+fi
 [ -f "$WIN/resources/app.asar" ] || die "未找到 win/resources/app.asar：把 Windows 绿色版整体放进 win/"
 [ -d "$INJECT/node_modules" ] || die "缺少 .cache/inject（app.asar 注入集，见 PORTING.md「app.asar 注入集」）"
 [ -x "$LINUX_BIN/bin/uv" ] || die "缺少 .cache/linux-bin/bin/uv（linux 版 uv）"
@@ -56,6 +72,17 @@ WORK="$ROOT/.migrate/app-tree"
 rm -rf "$WORK" && mkdir -p "$WORK"
 run_clean asar extract "$WIN/resources/app.asar" "$WORK"
 cp -a "$INJECT/." "$WORK/"
+# Linux 主窗口右上角窗口控制按钮（Windows 靠原生 titleBarOverlay，Linux 无 overlay 且 frameless）
+printf '\n' >> "$WORK/dist-electron/preload/index.js"
+cat "$ROOT/scripts/linux-window-controls.js" >> "$WORK/dist-electron/preload/index.js"
+# Linux 自动登录持久化（accessToken 被 401 清空后启动即跳过自动登录 ⇒ 每天要重登）
+printf '\n' >> "$WORK/dist-electron/preload/index.js"
+cat "$ROOT/scripts/linux-auto-login.js" >> "$WORK/dist-electron/preload/index.js"
+node --check "$WORK/dist-electron/preload/index.js"
+# 自动登录凭据的加密存储通道（safeStorage 是主进程专属模块，preload 取不到）
+printf '\n' >> "$WORK/dist-electron/main/index.js"
+cat "$ROOT/scripts/linux-auto-login-store.js" >> "$WORK/dist-electron/main/index.js"
+node --check "$WORK/dist-electron/main/index.js"
 run_clean asar pack "$WORK" "$RES/app.asar" \
   --unpack '*.{node,so,dll,exe}' --unpack-dir '**/node-pty/prebuilds'
 log "app.asar 重打包完成（叠加注入集 $(cd "$INJECT" && find . -type f | wc -l) 个文件）"

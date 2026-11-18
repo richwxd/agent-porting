@@ -1,0 +1,54 @@
+{
+  "name": "scnet-client",
+  "version": "4.1.0",
+  "main": "dist-electron/main/index.js",
+  "description": "计算服务",
+  "author": "曙光智算信息技术有限公司",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.0",
+  "imports": {
+    "#shared/*": "./shared/*.ts"
+  },
+  "patchedDependencies": {
+    "@earendil-works/pi-ai@1.1.0": "patches/@earendil-works__pi-ai@1.1.0.patch",
+    "@earendil-works/pi-coding-agent@1.1.0": "patches/@earendil-works__pi-coding-agent@1.1.0.patch",
+    "exceljs@4.4.0": "patches/exceljs@4.4.0.patch"
+  },
+  "compatRenderer": {
+    "sourceCommit": "40c0a7a34044658b912ec89c3ae0b567ac9f7de8"
+  },
+  "engines": {
+    "bun": ">=1.4.0",
+    "node": ">=24.18.1"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.74.0",
+    "@napi-rs/canvas": "1.0.2",
+    "@trycua/cua-driver": "0.34.1",
+    "docx": "9.9.0",
+    "driver.js": "^1.10.2",
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.8.9",
+    "exceljs": "4.4.0",
+    "fast-formula-parser": "1.0.19",
+    "mammoth": "1.13.0",
+    "msedge-tts": "2.1.0",
+    "node-pty": "1.1.0",
+    "qrcode": "^1.5.4",
+    "semver": "^7.8.5",
+    "ssh2": "^1.17.0",
+    "unpdf": "1.8.1",
+    "ws": "^8.22.0"
+  },
+  "scnetBuild": {
+    "applicationVariant": "production",
+    "release": true,
+    "channel": "release",
+    "updateChannel": "stable",
+    "baseVersion": "4.1.0",
+    "version": "4.1.0",
+    "commit": "8363e92"
+  }
+}
