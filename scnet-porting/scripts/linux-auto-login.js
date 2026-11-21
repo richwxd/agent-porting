@@ -13,6 +13,9 @@
 //      （safeStorage 是主进程专属模块，preload 取不到，实测 undefined）；
 //   b) 监听 sacp:host:event 的 "auth.session-expired"，以及启动 8s 后的探针
 //      "auth.refresh-snapshot" —— 未登录就用存下的入参重放 auth.login；
+//   e) 防过期保活：会话静默失效时主进程不推事件，故空闲（失焦/隐藏）时每 30min 探一次
+//      "auth.refresh-snapshot"（轻量 GET 用户信息端点，不触发模型/不耗 token）当心跳，
+//      既刷新服务端滑动过期窗口，也在真过期时顺带走上面的重登兜底；
 //   c) 主进程登录成功会向所有窗口广播 "auth.snapshot"，渲染层据此恢复登录态
 //      （与内置启动自动登录同一条路径）；
 //   d) 用户手工退出（auth.request-logout）后抑制自动登录，直到下次手工登录成功；
@@ -56,6 +59,11 @@
   var COOLDOWN = 30000; // 两次尝试的最小间隔
   var MAX_ATTEMPTS = 3; // 每轮最多连续尝试次数
   var LOG_CAP = 65536;
+  // 防过期保活轮询：服务端会话约一天失效且失效时不主动推事件，长时间挂着不操作会静默过期。
+  // 空闲时每 30min 探一次 auth.refresh-snapshot（GET 用户信息端点，不触发模型/不耗 token），
+  // 既刷新服务端滑动过期窗口当心跳，也在真过期时顺带触发重登兜底。
+  var HEARTBEAT_INTERVAL = 30 * 60 * 1000;
+  var HEARTBEAT_JITTER = 60 * 1000; // 抖动，避免整点齐发
 
   var LOG = null;
 
@@ -206,6 +214,44 @@
     });
   }
 
+  // ---------- 防过期保活轮询 ----------
+  // 空闲判定（preload sandbox 里拿不到 BrowserWindow.remote，用 document 焦点/可见性追踪）。
+  // 聚焦说明你正在用，本就有请求在保活，无需额外心跳；失焦/隐藏=空闲，才探活。
+  var windowActive = true;
+  function trackActivity() {
+    try {
+      var doc = typeof document !== 'undefined' ? document : null;
+      if (!doc) return;
+      var update = function () {
+        windowActive = doc.hasFocus() && doc.visibilityState !== 'hidden';
+      };
+      window.addEventListener('focus', update, true);
+      window.addEventListener('blur', update, true);
+      doc.addEventListener('visibilitychange', update, true);
+      update();
+    } catch (e) {}
+  }
+  function idle() {
+    // 判定不到（极早期）就当空闲：宁可多探一次也别静默过期
+    return !windowActive;
+  }
+
+  function heartbeat() {
+    if (!idle()) {
+      log('保活: 窗口聚焦中，跳过本次');
+      return;
+    }
+    tryLogin('heartbeat');
+  }
+
+  function scheduleHeartbeat() {
+    var wait = HEARTBEAT_INTERVAL + Math.floor(Math.random() * HEARTBEAT_JITTER);
+    setTimeout(function () {
+      heartbeat();
+      scheduleHeartbeat(); // 链式排下一次，进程活着就一直保活
+    }, wait);
+  }
+
   // ---------- 事件 ----------
   try {
     ipc.on('sacp:host:event', function (event, name) {
@@ -230,7 +276,9 @@
     }
     log('启动: dir=' + s.dir + ' suppressed=' + s.suppressed + ' hasCreds=' + !!s.creds + ' crypto=' + s.crypto);
     if (!s.suppressed && s.creds) {
+      trackActivity();
       setTimeout(function () { tryLogin('startup'); }, STARTUP_DELAY);
+      scheduleHeartbeat(); // 有凭据才值得保活
     }
   }).catch(function () {
     log('启动: 存储通道异常，自动登录不生效');

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MiniMax Code
+GenericName=AI Coding Agent
+Comment=MiniMax Code 桌面客户端（Linux x64）
+Exec=/opt/minimax-code/bin/minimax-code %U
+Icon=/opt/minimax-code/minimax-code.png
+Terminal=false
+Categories=Development;
+StartupNotify=true
+StartupWMClass=mmx-agent-electron
+Keywords=minimax;mcode;agent;ai;code;

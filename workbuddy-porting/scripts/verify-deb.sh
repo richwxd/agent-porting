@@ -121,6 +121,36 @@ for data, pat, want, name in checks:
 sys.exit(1 if bad_n else 0)
 PY
 
+echo "== 设置对齐补丁 E/F（renderer 资产字节断言）=="
+python3 - "$APP/resources/app.asar.unpacked/renderer/assets" <<'PY' || fail=1
+import sys
+from pathlib import Path
+a = Path(sys.argv[1])
+def one(pat):
+    hits = sorted(a.glob(pat))
+    if len(hits) != 1:
+        print("  \033[31m✗\033[0m %s 命中 %d 个（应为 1）" % (pat, len(hits))); sys.exit(1)
+    return hits[0].read_bytes()
+sys_plat = one('system-platform-*.js')
+sec = one('SecurityCenterPanel-*.js')
+BT = chr(96)
+checks = [
+    (sys_plat, ('/^Win/u.test(e)||/Linux/u.test(e)?' + BT + 'win32' + BT + ':' + BT + 'other' + BT + '}').encode(), 1, "E detectPlatform Linux→win32 已打"),
+    (sys_plat, ('/^Win/u.test(e)?' + BT + 'win32' + BT + ':' + BT + 'other' + BT + '}').encode(), 0, "E 旧探测(other) 已移除"),
+    (sec, ('function isHostWindows(){return getHostPlatform()===' + BT + 'win32' + BT + '||getHostPlatform()===' + BT + 'linux' + BT + '}').encode(), 1, "F isHostWindows 含 linux 已打"),
+    (sec, ('function isHostWindows(){return getHostPlatform()===' + BT + 'win32' + BT + '}').encode(), 0, "F 旧 isHostWindows(仅win32) 已移除"),
+]
+bad_n = 0
+for data, pat, want, name in checks:
+    n = data.count(pat)
+    if n == want:
+        print("  \033[32m✓\033[0m %s" % name)
+    else:
+        print("  \033[31m✗\033[0m %s (命中 %d，应为 %d)" % (name, n, want))
+        bad_n += 1
+sys.exit(1 if bad_n else 0)
+PY
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "✅ 校验通过: $DEB"

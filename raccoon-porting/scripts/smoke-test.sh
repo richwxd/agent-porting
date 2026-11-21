@@ -2,7 +2,7 @@
 # smoke-test.sh — 安装 deb → 启动 → 等待升级检测 → 汇报（一次性验证，可重复跑）
 set -uo pipefail
 unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT 2>/dev/null || true
-ROOT=/home/wxd/Workspace/Projects/Node/raccoon-porting
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEB="$(ls -t "$ROOT"/dist/raccoon-ai_*_amd64.deb 2>/dev/null | head -1)"
 [ -n "$DEB" ] || { echo "找不到产物"; exit 1; }
 

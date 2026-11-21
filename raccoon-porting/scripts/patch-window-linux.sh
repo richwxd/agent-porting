@@ -90,7 +90,7 @@ REPLACEMENTS = [
         { label: "最小化", role: "minimize" },
         { label: "关闭", role: "close" }
       ] },
-      { label: "帮助", submenu: [
+      { label: "帮助", id: "raccoon-help", submenu: [
         { label: "关于", click: showAbout }
       ] }
     ]));

@@ -70,6 +70,7 @@ checks = [
     (b'if (platform === "linux") {',              "补丁A resolveTrayIconPath linux 分支"),
     (b'["win32", "linux"].includes(process.platform) ? resolveTrayIconPath', "补丁B 主窗口 icon 解析"),
     (b'import_electron13.Menu.setApplicationMenu(import_electron13.Menu.buildFromTemplate([', "补丁C Linux 中文菜单栏"),
+    ('label: "帮助", id: "raccoon-help"'.encode(), "补丁C 帮助项带 raccoon-help id(更新菜单安装器合并入口)"),
     (b'!["win32", "linux"].includes(process.platform) || !tray || tray.isDestroyed()', "补丁E updateWindowsTrayMenu 门控(win32|linux)"),
     (b'!["win32", "linux"].includes(process.platform) || tray && !tray.isDestroyed()', "补丁E setupWindowsTray 门控(win32|linux)"),
     (b'["win32", "darwin", "linux"].includes(process.platform) && tray && !tray.isDestroyed()', "补丁E close 事件隐藏到托盘(含 linux)"),
@@ -79,6 +80,8 @@ checks = [
     (b'electron_1.shell.openPath(dir).catch(() => {})', "补丁F③ open-runtime-directory fire-and-forget(不 await)"),
     (b'electron_1.shell.openPath(entry.path).catch(() => {})', "补丁F④ 浏览器 external fire-and-forget(不 await)"),
     (b'const quitForceTimer = setTimeout(() => {', "补丁G 退出超时兜底: quitForceTimer 定义"),
+    ('title: "保存更新包",'.encode(), "补丁H 更新包另存为: showSaveDialog"),
+    (b'[app-update] update package saved', "补丁H 保存完成提示"),
     (b'platform === "win32" ? {',                 "原样: 标题栏仍按 win32 判定(不改)"),
 ]
 bad_n = 0

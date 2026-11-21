@@ -83,6 +83,15 @@ node --check "$WORK/dist-electron/preload/index.js"
 printf '\n' >> "$WORK/dist-electron/main/index.js"
 cat "$ROOT/scripts/linux-auto-login-store.js" >> "$WORK/dist-electron/main/index.js"
 node --check "$WORK/dist-electron/main/index.js"
+# 压缩摘要输出预算硬顶 8192→32768：长会话摘要撞 token 上限导致自动压缩失败，
+# 进而抛 "Context remains above the safe request budget after compaction."（见 PORTING.md）
+node "$ROOT/scripts/patch-compaction-summary-budget.cjs" "$WORK/dist-electron/main/b.js"
+node --check "$WORK/dist-electron/main/b.js"
+# composer 支持一次追加多个技能：已选一个技能后下拉不再隐藏技能分组（chunk 文件名带 hash，按内容定位）
+MULTI_SKILL_JS="$(grep -rlF 'function q(){return t.value?[]:a.value.map' "$WORK/dist/static/js/async/" | head -n 1 || true)"
+[ -n "$MULTI_SKILL_JS" ] || die "未定位到 composer 技能下拉 chunk（客户端可能已改版）"
+node "$ROOT/scripts/patch-composer-multi-skill.cjs" "$MULTI_SKILL_JS"
+node --check "$MULTI_SKILL_JS"
 run_clean asar pack "$WORK" "$RES/app.asar" \
   --unpack '*.{node,so,dll,exe}' --unpack-dir '**/node-pty/prebuilds'
 log "app.asar 重打包完成（叠加注入集 $(cd "$INJECT" && find . -type f | wc -l) 个文件）"

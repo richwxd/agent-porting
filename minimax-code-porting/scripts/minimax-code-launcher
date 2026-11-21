@@ -1,0 +1,38 @@
+#!/bin/bash
+# MiniMax Code 启动包装（deb 安装到 /opt/minimax-code/bin/minimax-code）
+# 调用 /opt/minimax-code/minimax-code，做运行时环境清理。
+
+set -u
+
+PREFIX="/opt/minimax-code"
+ELECTRON_BIN="$PREFIX/minimax-code"
+
+# 环境清理：
+# - LD_LIBRARY_PATH/LD_PRELOAD：宿主或打包器注入的 libstdc++ 缺 GPU 符号 → GPU 进程 LAUNCH_FAILED
+# - ELECTRON_RUN_AS_NODE：会让 Electron 当纯 Node 跑，窗口起不来
+# - TMPDIR 强制 /tmp：深路径会让 Electron SingletonSocket 触发 FATAL: Socket path too long
+# 保留 DBUS_SESSION_BUS_ADDRESS（keyring/kwallet）与 XDG_RUNTIME_DIR（Wayland socket）
+unset LD_LIBRARY_PATH
+unset LD_PRELOAD
+unset LD_AUDIT
+unset LIBGL_DRIVERS_PATH
+unset ELECTRON_RUN_AS_NODE
+unset ELECTRON_ENABLE_LOGGING
+unset CHROME_DEVEL_SANDBOX
+unset CHROMIUM_FLAGS
+
+export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+export TMPDIR="/tmp"
+mkdir -p "${TMPDIR}" 2>/dev/null || true
+
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/minimax-code"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+# chrome-sandbox 未 setuid（postinst 失败等）时回退 --no-sandbox
+if [ -u "$PREFIX/chrome-sandbox" ]; then
+    exec "$ELECTRON_BIN" "$@"
+else
+    exec "$ELECTRON_BIN" --no-sandbox "$@"
+fi

@@ -362,6 +362,8 @@ PY
 
   # 6) 更新检查补丁（Windows 通道 + 点击触发下载）
   bash "$ROOT/scripts/patch-update-check.sh" "$tree"
+  # 6b) 设置界面对齐 Windows（detectPlatform Linux→win32 + 安全中心 isHostWindows）
+  bash "$ROOT/scripts/patch-settings-win32.sh" "$tree"
 
   # 7) 重打包：全部 unpacked（原包 4000+ 非二进制文件也 unpacked，超集安全）
   rm -f "$RES/app.asar"

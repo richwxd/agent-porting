@@ -10,7 +10,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-for c in 7z unzip dpkg-deb file curl asar python3 tar sha256sum; do need "$c"; done
+for c in 7z unzip dpkg-deb file curl asar python3 tar sha256sum convert; do need "$c"; done
 
 log "1/8 准备 Windows 源 + 动态匹配版本号"
 SRC="$(prepare_win)"

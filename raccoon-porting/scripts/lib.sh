@@ -29,7 +29,8 @@ OFFICIAL_DEB_VERSION="${OFFICIAL_DEB_VERSION:-}"   # 空 = 构建时动态匹配
 OFFICIAL_DEB=""                                    # resolve_versions() 内按最终版本生成缓存路径
 OFFICIAL_DEB_URL_BASE="https://sta-volc.xiaohuanxiong.com/office-agent/linux/x64"
 OFFICIAL_TREE="$MIGRATE/official" # dpkg-deb -x 解出的官方 deb 内容
-OFFICIAL_APP="$OFFICIAL_TREE/opt/office-raccoon"
+OFFICIAL_APP=""                   # extract_official() 内按 opt/ 下实际目录探测
+                                   # （1.2.2 起官方目录名从 office-raccoon 变为 商汤小浣熊）
 
 # Linux Electron 版本：默认【从 Windows 包动态识别】（win_electron_version），必须与内置一致；
 # ELECTRON_VERSION 可显式覆盖。
@@ -266,11 +267,26 @@ prepare_official_deb() {
   fi
 }
 
+# 官方 deb 的 opt/ 目录名随版本变化（office-raccoon → 商汤小浣熊），按内容探测
+detect_official_app() {
+  local d
+  for d in "$OFFICIAL_TREE"/opt/*; do
+    [ -d "$d" ] || continue
+    if [ -f "$d/resources/box-agent-runtime/manifest.json" ]; then
+      OFFICIAL_APP="$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
 extract_official() {
-  [ -f "$OFFICIAL_APP/resources/box-agent-runtime/manifest.json" ] && return 0
-  log "解包官方 Linux deb → $OFFICIAL_TREE"
-  rm -rf "$OFFICIAL_TREE" && mkdir -p "$OFFICIAL_TREE"
-  run_clean dpkg-deb -x "$OFFICIAL_DEB" "$OFFICIAL_TREE" || die "解包官方 deb 失败"
+  if ! detect_official_app; then
+    log "解包官方 Linux deb → $OFFICIAL_TREE"
+    rm -rf "$OFFICIAL_TREE" && mkdir -p "$OFFICIAL_TREE"
+    run_clean dpkg-deb -x "$OFFICIAL_DEB" "$OFFICIAL_TREE" || die "解包官方 deb 失败"
+    detect_official_app || die "官方 deb 里找不到 resources/box-agent-runtime（opt 下: $(ls "$OFFICIAL_TREE/opt" 2>/dev/null | tr "\n" " ")）"
+  fi
 }
 
 # ───────────────────────── 构建步骤函数 ─────────────────────────
@@ -302,9 +318,18 @@ migrate_resources() {
     mv "$MIGRATE/linuxdeps/pandoc.tar.gz" "$ptar"
   fi
   if [ ! -f "$RES/pandoc/pandoc" ]; then
-    [ -f "$ptar" ] || fetch \
-      "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz" \
-      "$ptar"
+    if [ ! -f "$ptar" ]; then
+      # GitHub 直连本机超时，走镜像链（ghfast → gh-proxy → 官方源）
+      local rel="/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-linux-amd64.tar.gz" got=0 m
+      for m in "https://ghfast.top/https://github.com$rel" \
+               "https://gh-proxy.com/https://github.com$rel" \
+               "https://github.com$rel"; do
+        log "下载 pandoc v${PANDOC_VERSION}: $m"
+        if run_clean curl -fsSL --retry 2 --max-time 900 -o "$ptar" "$m"; then got=1; break; fi
+        rm -f "$ptar"
+      done
+      [ "$got" = 1 ] || die "pandoc 下载失败（所有镜像）"
+    fi
     mkdir -p "$MIGRATE/ptmp"
     run_clean tar -xzf "$ptar" -C "$MIGRATE/ptmp"
     mkdir -p "$RES/pandoc"
@@ -313,21 +338,19 @@ migrate_resources() {
     rm -rf "$MIGRATE/ptmp"
   fi
 
-  # assets：Windows 有 icon.ico/menu-bar-raccoon.png，补官方 Linux 的 icon.png（窗口图标）
-  cp -a "$OFFICIAL_APP/resources/assets/icon.png" "$RES/assets/icon.png"
+  # assets：Windows 有 icon.ico/menu-bar-raccoon.png，补 icon.png（窗口图标，Wayland 不吃 .ico）
+  # 来源：官方 assets/icon.png → 兜底官方 hicolor 主图标（1.2.2 起官方不再放 assets/icon.png，两者字节一致）
+  local icon_src="$OFFICIAL_APP/resources/assets/icon.png"
+  [ -f "$icon_src" ] || icon_src="$OFFICIAL_TREE/usr/share/icons/hicolor/1024x1024/apps/$BIN_NAME.png"
+  [ -f "$icon_src" ] || die "找不到窗口图标 icon.png 来源"
+  cp -a "$icon_src" "$RES/assets/icon.png"
 
-  # render-node-deps：@napi-rs/canvas 平台包 win32 → linux
-  local rb="$RES/render-node-deps/node_modules"
-  local ob="$OFFICIAL_APP/resources/render-node-deps/node_modules"
-  if [ -d "$rb/@napi-rs/canvas-win32-x64-msvc" ]; then
-    rm -rf "$rb/@napi-rs/canvas-win32-x64-msvc"
-    cp -a "$ob/@napi-rs/canvas-linux-x64-gnu" "$rb/@napi-rs/"
-  fi
-  if [ -d "$rb/pdfjs-dist/node_modules/@napi-rs/canvas-win32-x64-msvc" ]; then
-    rm -rf "$rb/pdfjs-dist/node_modules/@napi-rs/canvas-win32-x64-msvc"
-    cp -a "$ob/pdfjs-dist/node_modules/@napi-rs/canvas-linux-x64-gnu" \
-          "$rb/pdfjs-dist/node_modules/@napi-rs/"
-  fi
+  # render-node-deps：Linux 专用渲染依赖（app 只在 platform=linux 时读取），官方 deb 是唯一来源；
+  # win1.2.2 起不再随 Windows 包附带，整体取官方 Linux 版替换（win32 版对 Linux 无用）
+  local rd="$OFFICIAL_APP/resources/render-node-deps"
+  [ -d "$rd/node_modules" ] || die "官方 deb 缺 resources/render-node-deps"
+  rm -rf "$RES/render-node-deps"
+  cp -a "$rd" "$RES/render-node-deps"
 
   # 兜底检查：resources 下不应再有 Windows 专属二进制
   local leftover
@@ -345,6 +368,8 @@ repack_asar() {
   asar extract "$WINAPP/resources/app.asar" "$tree"
 
   bash "$ROOT/scripts/patch-update-check.sh" "$tree"
+  # 更新包改为点「下载」→ 询问保存路径 → 存到所选路径（不自动下载/不自动安装）
+  bash "$ROOT/scripts/patch-update-saveas.sh" "$tree"
   bash "$ROOT/scripts/patch-window-linux.sh" "$tree"
   # Linux：系统托盘（关窗隐藏到托盘，托盘可显示主界面/退出；patch-window-linux 已补图标路径）
   bash "$ROOT/scripts/patch-tray-linux.sh" "$tree"
@@ -386,6 +411,16 @@ gen_icons() {
     mkdir -p "$STAGE/usr/share/icons"
     rm -rf "$STAGE/usr/share/icons/hicolor"
     cp -a "$h" "$STAGE/usr/share/icons/"
+    # 1.2.2 起官方只带 1024x1024；补齐常用尺寸（桌面缩放 + verify 断言 256x256）
+    local src="$h/1024x1024/apps/$BIN_NAME.png" size dst
+    if [ -f "$src" ]; then
+      for size in 16 24 32 48 64 128 256 512; do
+        dst="$STAGE/usr/share/icons/hicolor/${size}x${size}/apps"
+        [ -f "$dst/$BIN_NAME.png" ] && continue
+        mkdir -p "$dst"
+        run_clean convert "$src" -resize "${size}x${size}" "$dst/$BIN_NAME.png"
+      done
+    fi
   else
     warn "官方 deb 无 hicolor 图标，跳过"
   fi

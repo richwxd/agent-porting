@@ -19,7 +19,8 @@ workbuddy-porting/
 │   ├── build-deb.sh          # 一键构建入口（仅构建，8 步）
 │   ├── lib.sh                # 公共函数（解包/版本识别/迁移/注入/打包）
 │   ├── patch-update-check.sh # 升级检测 3 补丁（A 通道/B url/C 下载）
-│   ├── verify-deb.sh         # 产物校验（关键文件、Linux 原生件、3 补丁字节断言）
+│   ├── patch-settings-win32.sh # 设置对齐 2 补丁（E detectPlatform/F isHostWindows）
+│   ├── verify-deb.sh         # 产物校验（关键文件、Linux 原生件、补丁字节断言）
 │   └── smoke-test.sh         # 安装 + 启动 + 升级检测日志检查
 ├── dist/                     # 产物 deb
 ├── .cache/                   # 下载缓存（Electron/官方 deb，可删）
@@ -50,7 +51,7 @@ workbuddy-porting/
 
    ```bash
    ./scripts/build-deb.sh    # 构建（版本号全部动态匹配，无需手填）
-   ./scripts/verify-deb.sh   # 关键文件 + ELF + 3 补丁字节断言
+   ./scripts/verify-deb.sh   # 关键文件 + ELF + 补丁字节断言
    sudo dpkg -i dist/workbuddy_<版本>_amd64.deb
    ./scripts/smoke-test.sh   # 安装 → 启动 → 等升级检测（约 30s 首查）→ 汇报日志
    ```
@@ -98,6 +99,27 @@ feed 实测（`GET https://copilot.tencent.com/v2/update`，2026-11）：
 **未打的补丁**（与 raccoon 移植不同）：本包 win asar 已内置 Linux 分支
 （`update-service.linux.js`、`tray-linux*.png`、`linuxPackaged` runtime 软链），无窗口/
 托盘/对话框/退出挂起问题的证据 → 不加对应补丁，冒烟验证。
+## 设置界面对齐 Windows 版（补丁 E/F）
+
+Windows 版设置界面可见的区块在 Linux 上被隐藏：renderer 的平台探测走 navigator
+（`detectPlatform()`），Linux 上 `navigator.platform=Linux x86_64` → 判 `other` →
+`isWindows()`=false → 智能体页「电脑操控/浏览器操控」、设备连接「远程控制」等区块整体
+不渲染。`patch-settings-win32.sh` 定点替换（同 A/B/C 风格，幂等）：
+
+| # | 原样行为（Linux） | 补丁后 | 效果 |
+|---|---|---|---|
+| E | `detectPlatform()` 尾部 `/^Win/u.test(e)?`win32`:`other`}` 判 Linux=other | 加 `||/Linux/u.test(e)` → 判 win32 | 智能体页电脑操控/浏览器操控、设备连接远程控制、设置搜索索引、UserMenu 通知引导平台参数全部与 Windows 一致 |
+| F | SecurityCenterPanel 本地 `isHostWindows()` 仅 win32 | 包含 linux | 安全中心运行时卡 nodejs/python/**gitbash** 与 Windows 一致 |
+
+**未打的补丁（ceiling）**：
+
+- G（CommandDetail 程序名归一化 `f=t?`win32`:`unix``）：改变命令黑名单的
+  真实校验语义（win32 归一化），非设置界面可见结构差异，需要时再打。
+- environment 共享模块 `isHostWindows` 不动：其消费方 `isWorkspacePathTooLong(e){return
+  roe()&&e.length>100}` 是 Windows 100 字符路径限制，翻转会误拒 Linux 合法长路径。
+- E 副作用：`hostDefaultOpenPlatform()` 上报 `win32`（growth 任务平台参数）、通知引导
+  传 win32——与 raccoon「Linux 侧走 win32 流」移植哲学一致，遥测口径记为 ceiling。
+- ModelsSettingsPanel 的 `viewportPadding`（下拉内边距 56px）不随 E 变化，微小视觉差异留置。
 
 ## 脚本做了什么
 
@@ -108,7 +130,7 @@ feed 实测（`GET https://copilot.tencent.com/v2/update`，2026-11）：
 | 官方 Linux deb | linux feed 动态解析（`version=0.0.1` 探测拿最新 + url + sha256）→ 缓存 `.cache/workbuddy-linux-<ver>.deb` 按 sha 校验 |
 | 重命名 electron→workbuddy + 覆盖官方定制主程序 | 让 `app.isPackaged=true`；主程序/`resources.pak`/`libGLESv2.so` 用官方 deb 件（原版 Electron 缺 `electron.workbuddyStorage` → 弹窗+401，见平台依赖矩阵） |
 | 迁移 resources | SKIP 剔除 win 专属（见下表）+ 从官方 deb 补 `runtime/`、托盘图、AppArmor profile |
-| 重打包 app.asar | 补缺失占位 → 解包 → 叠加 winapp unpacked 真文件 → 注入 7 项 Linux 原生件 → 3 补丁 → `asar pack --unpack-dir '**'`（全量 unpacked） |
+| 重打包 app.asar | 补缺失占位 → 解包 → 叠加 winapp unpacked 真文件 → 注入 7 项 Linux 原生件 → 3 更新补丁 + 2 设置补丁 → `asar pack --unpack-dir '**'`（全量 unpacked） |
 | 图标/.desktop/DEBIAN | 官方 hicolor 全尺寸图标、启动包装器、官方 .desktop 改 Exec、postinst/prerm |
 | 打包 deb | `dpkg-deb --build --root-owner-group` → `dist/` |
 
@@ -141,7 +163,7 @@ feed 实测（`GET https://copilot.tencent.com/v2/update`，2026-11）：
 4. **叠加**：`cp -an winapp/app.asar.unpacked/. tree/` —— asar header 没有的 325 个真文件
    （`main/preload/background-worker.cjs`、`fork-preload.cjs`、im-channels lib、`ImSDK.dll` 等）。
 5. **注入 Linux 原生件**：7 项白名单（见平台依赖矩阵），`die` 校验源存在。
-6. **补丁**：`patch-update-check.sh`（A/B/C）。
+6. **补丁**：`patch-update-check.sh`（A/B/C）+ `patch-settings-win32.sh`（E/F）。
 7. **重打包**：`asar pack tree app.asar --unpack-dir '**'` —— 全部 unpacked（含 `package.json`），
    app.asar 只剩 header，内容在 `app.asar.unpacked/`。**verify 的字节断言因此读
    `app.asar.unpacked/main/*.js`，不读 app.asar。**
@@ -155,7 +177,7 @@ feed 实测（`GET https://copilot.tencent.com/v2/update`，2026-11）：
 ├── version                    37.10.3（原版 Electron 运行时）
 ├── resources/
 │   ├── app.asar               业务逻辑（header，内容全 unpacked）
-│   ├── app.asar.unpacked/     全部真实文件 + 3 补丁 + Linux 原生件
+│   ├── app.asar.unpacked/     全部真实文件 + 5 补丁 + Linux 原生件
 │   ├── runtime/               node + python（VendorAssetEnsure 软链目标）
 │   ├── tray-linux*.png  apparmor-profile   官方 Linux 资源
 │   ├── file-icons/ wb-guest-sdk/ licenses/ ...  跨平台业务资源

@@ -1,0 +1,12 @@
+#!/bin/bash
+# minimax-code postrm：卸载后刷新菜单缓存（用户配置 ~/.config/MiniMax* 保留）
+set -e
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications 2>/dev/null || true
+fi
+if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 --noincremental 2>/dev/null || true
+fi
+
+exit 0

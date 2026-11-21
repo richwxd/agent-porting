@@ -1,0 +1,22 @@
+#!/bin/bash
+# minimax-code postinst：chrome-sandbox setuid + 菜单缓存刷新
+set -e
+
+SANDBOX="/opt/minimax-code/chrome-sandbox"
+
+# Electron SUID sandbox 必需；失败时启动包装器会自动回退 --no-sandbox
+if [ -f "$SANDBOX" ]; then
+    chown root:root "$SANDBOX" 2>/dev/null || true
+    chmod 4755 "$SANDBOX" 2>/dev/null || true
+fi
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database /usr/share/applications 2>/dev/null || true
+fi
+if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 --noincremental 2>/dev/null || true
+elif command -v kbuildsycoca5 >/dev/null 2>&1; then
+    kbuildsycoca5 --noincremental 2>/dev/null || true
+fi
+
+exit 0

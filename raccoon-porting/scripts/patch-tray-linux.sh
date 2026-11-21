@@ -28,7 +28,7 @@ F="$TREE/dist/electron/client-main.cjs"
 [ -f "$F" ] || { echo "错误: 找不到 $F" >&2; exit 1; }
 
 python3 - "$F" <<'PY'
-import io, sys
+import io, re, sys
 
 path = sys.argv[1]
 src = io.open(path, encoding="utf-8").read()
@@ -49,12 +49,26 @@ REPLACEMENTS = [
         '    if ((process.platform === "win32" || process.platform === "darwin") && tray && !tray.isDestroyed()) {',
         '    if (["win32", "darwin", "linux"].includes(process.platform) && tray && !tray.isDestroyed()) {',
     ),
-    (
-        # window-all-closed：有托盘则保持后台（托盘可唤回/退出）；无托盘（创建失败）仍退出兜底
-        'import_electron13.app.on("window-all-closed", () => {\n  if (!updateInstalling) import_electron13.app.quit();\n});',
-        'import_electron13.app.on("window-all-closed", () => {\n  if (updateInstalling) return;\n  // 有托盘：关窗后保持后台运行，由托盘显示主界面/退出；无托盘则退出（兜底）\n  if (typeof tray !== "undefined" && tray && !tray.isDestroyed()) return;\n  import_electron13.app.quit();\n});',
-    ),
 ]
+
+# window-all-closed：有托盘则保持后台（托盘可唤回/退出）；无托盘（创建失败）仍退出兜底。
+# import 别名随打包批次变（1.2.1=import_electron13，1.2.2=import_electron14），按实际绑定解析。
+m = re.search(
+    r'([\w$]+)\.app\.on\("window-all-closed", \(\) => \{\n'
+    r'  if \(!updateInstalling\) \1\.app\.quit\(\);\n\}\);', src)
+if not m:
+    print("错误: 未找到 window-all-closed 目标片段", file=sys.stderr)
+    sys.exit(2)
+alias = m.group(1)
+head = m.group(0).split("\n")[0]
+REPLACEMENTS.append((
+    m.group(0),
+    head + '\n'
+    '  if (updateInstalling) return;\n'
+    '  // 有托盘：关窗后保持后台运行，由托盘显示主界面/退出；无托盘则退出（兜底）\n'
+    '  if (typeof tray !== "undefined" && tray && !tray.isDestroyed()) return;\n'
+    f'  {alias}.app.quit();\n}});',
+))
 
 for old, new in REPLACEMENTS:
     n = src.count(old)

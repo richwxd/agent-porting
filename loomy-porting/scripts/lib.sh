@@ -65,10 +65,15 @@ prepare_win() {
 
 # 从 win 目录读版本号（Loomy-0.9.39-win → 0.9.39）
 win_version() {
-  local dir="$1" base
+  local dir="$1" base ver
   base="$(basename "$dir")"
   [[ "$base" =~ Loomy-([0-9][0-9a-zA-Z.\-]*)-win ]] && { echo "${BASH_REMATCH[1]}"; return 0; }
-  die "无法从目录名 $base 识别版本号"
+  # 官方 zip 可能平铺解压（无 Loomy-<版本>-win 顶层目录）→ 从应用 package.json 兜底
+  if [ -f "$dir/resources/app.asar.unpacked/package.json" ]; then
+    ver="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dir/resources/app.asar.unpacked/package.json" | head -1)"
+    [[ "$ver" =~ ^[0-9] ]] && { echo "$ver"; return 0; }
+  fi
+  die "无法识别 Loomy 版本号（目录名 $base 不匹配 Loomy-<版本>-win，且未找到 resources/app.asar.unpacked/package.json）"
 }
 
 # 解压 electron-v***-linux-x64.zip（放项目根目录）到 .cache/，删除 zip
@@ -132,6 +137,12 @@ repack_asar() {
 
   # 修正 Linux“检查更新”报“请求参数错误”：平台归一 + 绿色版下载地址
   bash "$ROOT/scripts/patch-update-check.sh" "$tree"
+
+  # Linux 自绘 titlebar：frame:false + 窗口控制 IPC + 渲染层注入三按钮
+  bash "$ROOT/scripts/patch-linux-titlebar.sh" "$tree"
+
+  # 讯飞 spark-x2.6：历史 tool 参数双重编码/非法 JSON → 400 invalid request（发送前清洗）
+  bash "$ROOT/scripts/patch-spark-toolargs.sh" "$tree"
 
   local kr="node_modules/$KEYRING_PKG"
   mkdir -p "$tree/$kr"
