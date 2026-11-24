@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=豆包工作
+Name[en]=DoubaoWork
+GenericName=AI Workspace
+Comment=豆包工作桌面客户端（Wine 用户级安装）
+Exec=@BIN@/doubaowork %U
+Icon=@ICON@
+Terminal=false
+Categories=Office;Network;
+StartupNotify=true
+StartupWMClass=doubaowork.exe
+Actions=CheckUpdate;
+
+[Desktop Action CheckUpdate]
+Name=检查更新
+Exec=@BIN@/doubaowork --check-update-gui

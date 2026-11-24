@@ -92,6 +92,12 @@ MULTI_SKILL_JS="$(grep -rlF 'function q(){return t.value?[]:a.value.map' "$WORK/
 [ -n "$MULTI_SKILL_JS" ] || die "未定位到 composer 技能下拉 chunk（客户端可能已改版）"
 node "$ROOT/scripts/patch-composer-multi-skill.cjs" "$MULTI_SKILL_JS"
 node --check "$MULTI_SKILL_JS"
+# 登录页回填已存密码与「自动登录」勾选：read-remembered-login 只回用户名 ⇒ 初始化仍要重填
+LOGIN_JS="$(grep -rlF 'o.readRememberedLogin().then(e=>{!g.value&&e?.username' "$WORK/dist/static/js/async/" | head -n 1 || true)"
+[ -n "$LOGIN_JS" ] || die "未定位到登录页 chunk（客户端可能已改版）"
+node "$ROOT/scripts/patch-autologin-prefill.cjs" "$WORK"
+node --check "$WORK/dist-electron/main/index.js"
+node --check "$LOGIN_JS"
 run_clean asar pack "$WORK" "$RES/app.asar" \
   --unpack '*.{node,so,dll,exe}' --unpack-dir '**/node-pty/prebuilds'
 log "app.asar 重打包完成（叠加注入集 $(cd "$INJECT" && find . -type f | wc -l) 个文件）"

@@ -82,6 +82,8 @@ checks = [
     (b'const quitForceTimer = setTimeout(() => {', "补丁G 退出超时兜底: quitForceTimer 定义"),
     ('title: "保存更新包",'.encode(), "补丁H 更新包另存为: showSaveDialog"),
     (b'[app-update] update package saved', "补丁H 保存完成提示"),
+    (b'openOnboarding:(s=0)=>', "补丁I 首页资料入口改走引导向导(openOnboarding)"),
+    (b'onClick:()=>t.openOnboarding?.(1)', "补丁I 首页提示传入记忆步骤"),
     (b'platform === "win32" ? {',                 "原样: 标题栏仍按 win32 判定(不改)"),
 ]
 bad_n = 0
@@ -116,6 +118,15 @@ if data.count(b'clearTimeout(quitForceTimer)') == 2:
 else:
     print("  \033[31m✗\033[0m 补丁G clearTimeout 计数异常 (命中 %d，应为 2)" % data.count(b'clearTimeout(quitForceTimer)'))
     bad_n += 1
+# 补丁I 否定断言：不能再走本地问卷入口（cloud 构建保存必失败）
+for pat, name in [
+    (b'onClick:()=>t.openOnboarding?.()', "补丁I 无残留本地问卷入口"),
+]:
+    if data.count(pat) == 0:
+        print(f"  \033[32m✓\033[0m {name}")
+    else:
+        print(f"  \033[31m✗\033[0m {name} (命中 {data.count(pat)} 次，应为 0)")
+        bad_n += 1
 for pat, name in checks:
     n = data.count(pat)
     if n == 1:

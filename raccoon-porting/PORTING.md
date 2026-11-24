@@ -13,7 +13,8 @@
 raccoon-porting/
 ├── win/                      # 放入 商汤小浣熊-<版本>-x64.exe（NSIS 安装包）
 ├── scripts/
-│   ├── migrate.sh            # 一键迁移：构建 → 校验 → 安装（--no-install / --smoke）
+│   ├── migrate.sh            # 一键迁移：构建 → 校验 → 安装（--no-install / --smoke / --clean-cache）
+│   ├── clean-cache.sh        # 清理 .migrate 与 .cache（只留 .cache/electron/）
 │   ├── build-deb.sh          # 一键构建入口（仅构建）
 │   ├── lib.sh                # 公共函数（解包/迁移/注入/打包）
 │   ├── patch-update-check.sh # 升级检测 4 补丁（始终按 Windows 版本）
@@ -22,10 +23,12 @@ raccoon-porting/
 │   ├── patch-dialog-parent.sh # 原生文件对话框去 parent window 9 补丁（Wayland 挂死）
 │   ├── patch-workspace-open-linux.sh # "打开当前目录"卡死 4 补丁（4 处 shell.openPath → fire-and-forget）
 │   ├── patch-quit-timeout-linux.sh # 托盘/窗口"退出"挂起 1 补丁（清理超时强制退出）
-│   ├── verify-deb.sh         # 产物校验（关键文件、平台替换、4+3+4+2+1 补丁、无残留 .node）
+│   ├── patch-memory-questionnaire.sh # 首页"完善资料"入口改走引导向导记忆步骤（cloud 记忆修复）
+│   ├── verify-deb.sh         # 产物校验（关键文件、平台替换、4+3+4+2+1+I 补丁、无残留 .node）
 │   └── smoke-test.sh         # 安装 + 启动 + 升级检测日志检查
 ├── dist/                     # 产物 deb
-├── .cache/                   # 下载缓存（Electron/官方 deb/pandoc，可删）
+├── .cache/                   # 下载缓存：electron/<版本>/（版本化运行时，保留）
+│                             #           官方 deb、pandoc（可删，缺则重下）
 ├── .migrate/                 # 中间产物（解包源、stage，可删）
 └── PORTING.md
 ```
@@ -36,7 +39,7 @@ raccoon-porting/
 
    ```
    win/商汤小浣熊-<版本>-x64.exe      必须，例如 win/商汤小浣熊-1.2.2-x64.exe
-   electron-v<版本>-linux-x64.zip     可选，放项目根目录或 .cache/（放了就用、
+   electron-v<版本>-linux-x64.zip     可选，放项目根目录或 .cache/electron/（放了就用、
                                        不会被删除；缺失时自动下载并按 SHASUMS256 校验）
    ```
 
@@ -46,6 +49,7 @@ raccoon-porting/
    ./scripts/migrate.sh               # 完整一键
    ./scripts/migrate.sh --no-install  # 只构建 + 校验
    ./scripts/migrate.sh --smoke       # 追加冒烟（启动 + 升级检测日志）
+   ./scripts/migrate.sh --clean-cache # 构建/校验/安装后清理 .migrate 与 .cache（只留 electron/）
    ```
 
    包名与官方 Linux 包一致（`raccoon-ai`），覆盖升级自动进行；用户配置在
@@ -53,7 +57,7 @@ raccoon-porting/
 
    ```bash
    ./scripts/build-deb.sh    # 构建（三个版本号全部动态匹配，无需手填）
-   ./scripts/verify-deb.sh   # 29 项断言：关键文件、平台替换、4+3+4+2+1 补丁、无残留 .node
+   ./scripts/verify-deb.sh   # 全部断言：关键文件、平台替换、4+3+4+2+1+I 补丁、无残留 .node
    sudo dpkg -i dist/raccoon-ai_<版本>_amd64.deb
    ./scripts/smoke-test.sh   # 安装 → 启动 → 等升级检测 → 汇报 raccoon.log
    ```
@@ -114,7 +118,7 @@ exe、安装步骤不适用）。Linux 原生升级请以官方 `linux/x64` feed
 |------|------|
 | 解包 win/*.exe | NSIS 两段式：`$PLUGINSDIR/app-64.7z` → `.migrate/winapp/`（保留作输入） |
 | 版本号 | 从 `app.asar` 内 `package.json` 读取（兜底：exe 文件名）；按版本戳缓存解包，换 exe 自动重解 |
-| Electron | 版本从 `app.asar` **动态识别**（pnpm 路径 `_electron@x.y.z`，当前 41.0.1）→ `.cache/` 缺则下载 + SHASUMS256 校验 |
+| Electron | 版本从 `app.asar` **动态识别**（pnpm 路径 `_electron@x.y.z`，当前 41.0.1）→ 缓存在 `.cache/electron/<版本>/`：同版本直接复用，版本不同则删旧缓存重下；下载走 npmmirror/华为云/GitHub 镜像链 + SHASUMS256 校验 |
 | 官方 Linux deb | 版本**动态匹配**：精确同名 `商汤小浣熊-<winver>-amd64.deb` → `latest-linux.yml` 最新（当前 1.2.0）→ 1.0.38 兜底；作 **Linux 原生依赖唯一来源** |
 | 重命名 electron→raccoon-ai | 让 `app.isPackaged=true`，避免 dev 分支走错误入口 |
 | 迁移 resources | 跨平台目录原样拷；平台专属换 Linux 版（见下表） |
@@ -240,6 +244,29 @@ exe、安装步骤不适用）。Linux 原生升级请以官方 `linux/x64` feed
   正常路径不受影响：`close()` 完成后 `clearTimeout`，`catch` 里也 `clearTimeout`（允许重试）。
 - **验证**：`const quitForceTimer = setTimeout(() => {` 定义 1 次 + `clearTimeout(quitForceTimer)` 2 次
   （then+catch）；已加进 `verify-deb.sh` 补丁G 断言。实测日志证明 `agent-host` 清理挂起为根因。
+
+## 首页"完善资料"保存失败（`patch-memory-questionnaire.sh`）
+
+- **症状**：cloud 构建里点首页提示「完善资料，让商汤小浣熊更懂你」，
+  填写后点「保存到本地记忆」始终提示「资料保存失败，内容已保留。请检查填写内容后重试。」，
+  改内容/重试/重启均无效；「自动填写草稿」也同样失败。
+- **根因**：该入口打开的是**本地**记忆问卷组件（`gf`），保存走
+  `desktop-client:save-memory-questionnaire` → `writeMemoryEntries()` →
+  `assertLegacyMemoryMode()`（`build/electron/main/memory-v2/memoryBuildPolicy.js`）。
+  该断言要求 `package.json` 的 `raccoonMemoryMode === "local"`，而本包是 `cloud`
+  （`memory-v2.sqlite` 的 enrollment 也是 `mode: "cloud"`）→ 必然抛
+  `MEMORY_MODE_MISMATCH`；渲染层把异常统一显示成 `questionnaire.saveFailed`。
+- **官方包同样存在**：1.2.4 Windows / 1.2.5 官方 Linux 的 `openOnboarding` 入口都绑定本地问卷，
+  不是移植引入。
+- **修复（补丁I，2 处）**：
+  1. `openOnboarding:()=>setState(!0)` → `openOnboarding:(s=0)=>wizard.open(s)`
+  2. 首页提示 `onClick:()=>t.openOnboarding?.()` → `onClick:()=>t.openOnboarding?.(1)`
+
+  入口改为打开引导向导的「记忆」步骤（`gA`/`gN`），该步骤按 `memoryV2.status()` 分流：
+  `local` → 本地问卷（`gg`），`cloud` → memory-v2 问卷（`gC`/`gk`），两种构建都能保存。
+  向导 hook 与 state 变量名按压缩产物自动识别，不绑定具体版本（1.2.4/1.2.5 均验证）。
+- **验证**：`openOnboarding:(s=0)=>` 与 `onClick:()=>t.openOnboarding?.(1)` 各 1 次，
+  且无残留 `onClick:()=>t.openOnboarding?.()`；已加进 `verify-deb.sh` 补丁I 断言。
 
 ## 安装后布局
 

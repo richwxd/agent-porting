@@ -1,0 +1,272 @@
+#!/bin/bash
+# doubaowork-update — 自研更新器（安装到 ~/.local/share/doubaowork/bin/doubaowork-update）
+#
+# 走官方版本通道：
+#   GET https://www.doubao.com/service/settings/v3/?device_platform=pc&brand=doubaowork
+#       &aid=1044603&os=windows&update_type=downloader&version_code=<当前>
+#   → data.settings.saman_update_address.{newest_version,win_x64_url,win_x64_md5}
+#
+# 更新包是完整应用树（signed tar.zst，约 805 MB，解开约 1.8 GB），
+# 流程：下载 → md5 → 解到暂存 → 停机 → 原子切换 → 记录状态；保留一份旧版本可回滚。
+set -euo pipefail
+
+SELF_REAL="$(readlink -f "${BASH_SOURCE[0]}")"
+HOME_ROOT="$(cd "$(dirname "$SELF_REAL")/.." && pwd)"
+export DOUBAOWORK_HOME="$HOME_ROOT"
+# shellcheck disable=SC1091
+. "$HOME_ROOT/lib.sh"
+
+ACTION="--check"
+PKG_OVERRIDE=""
+VER_OVERRIDE=""
+DRY_RUN=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check)   ACTION="--check" ;;
+    --apply)   ACTION="--apply" ;;
+    --rollback) ACTION="--rollback" ;;
+    --gui)     ACTION="--gui" ;;
+    --package) PKG_OVERRIDE="${2:-}"; shift ;;
+    --version) VER_OVERRIDE="${2:-}"; shift ;;
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help)
+      sed -n '2,12p' "$SELF_REAL" | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) die "未知参数：$1（--check|--apply|--rollback|--gui|--package|--version|--dry-run）" ;;
+  esac
+  shift
+done
+
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/doubaowork-update.XXXXXX")"
+trap 'rm_rf "$TMP"' EXIT
+
+NEW_VER=""; NEW_URL=""; NEW_MD5=""; FORCE_VER=""; RELEASE_NOTE=""
+
+fetch_info() {
+  local ver="$1" out="$TMP/info.json" url
+  url="${UPDATE_API}?${UPDATE_API_QS}&version_code=${ver}&os_version=10.0.26300"
+  run_clean curl -fsS --max-time 40 -H 'User-Agent: Mozilla/5.0' "$url" -o "$out" \
+    || die "版本通道请求失败：$url"
+  # shellcheck disable=SC2046
+  eval "$(python3 - "$out" <<'PY'
+import json, sys, shlex
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+a = ((d.get("data") or {}).get("settings") or {}).get("saman_update_address") or {}
+if not a:
+    sys.exit("版本通道返回缺少 saman_update_address")
+def emit(k, v):
+    print(f"{k}={shlex.quote(str(v or ''))}")
+emit("NEW_VER", a.get("newest_version") or a.get("version"))
+emit("NEW_URL", a.get("win_x64_url"))
+emit("NEW_MD5", a.get("win_x64_md5"))
+emit("FORCE_VER", a.get("force_version"))
+emit("RELEASE_NOTE", a.get("release_note"))
+PY
+)"
+  [ -n "$NEW_VER" ] || die "版本通道未返回 newest_version"
+}
+
+local_version() { app_version || die "无法读取本地版本：$MANIFEST"; }
+
+md5_of() { python3 -c 'import hashlib,sys; h=hashlib.md5(); h.update(open(sys.argv[1],"rb").read()); print(h.hexdigest())' "$1"; }
+
+stop_app() {
+  local ws
+  ws="$(dirname "$(wine_exec)")/wineserver"
+  if [ -x "$ws" ]; then
+    WINEPREFIX="$PREFIX" "$ws" -k 2>/dev/null || true
+  fi
+  sleep 1
+  # 只按 wine 进程里的 Windows 路径（反斜杠）匹配，避免误杀同名的 Linux shell / 工具进程
+  for d in /proc/[0-9]*/cmdline; do
+    if cat "$d" 2>/dev/null | tr '\0' ' ' | grep -qF 'DoubaoWork\Application'; then
+      pid="${d#/proc/}"; pid="${pid%/cmdline}"
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done
+  sleep 1
+}
+
+sync_registry_version() {
+  local v="$1"
+  WINEPREFIX="$PREFIX" WINEDEBUG=-all "$(wine_exec)" reg add \
+    'HKCU\Software\DoubaoWork' /v Version /d "$v" /f >/dev/null 2>&1 || \
+    warn "注册表版本未同步（不影响本更新器启动）"
+}
+
+save_state() {
+  local v="$1" prev="$2" src="$3"
+  python3 - "$STATE_FILE" "$v" "$prev" "$src" "$HOME_ROOT" <<'PY'
+import json, sys, time
+path, ver, prev, src, root = sys.argv[1:6]
+try:
+    st = json.load(open(path, encoding="utf-8"))
+except Exception:
+    st = {}
+st.update({"app": "doubaowork", "version": ver, "previous_version": prev,
+           "source": src, "home": root, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+json.dump(st, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+}
+
+prune_old() {
+  python3 - "$APP_DIR" <<'PY'
+import os, shutil, sys
+base = sys.argv[1]
+olds = sorted([d for d in os.listdir(base) if d.startswith("app.old-")],
+              key=lambda d: os.path.getmtime(os.path.join(base, d)))
+for d in olds[:-1]:
+    shutil.rmtree(os.path.join(base, d), ignore_errors=True)
+PY
+}
+
+do_check() {
+  require_prefix
+  fetch_info "$(local_version)"
+  local cur; cur="$(local_version)"
+  if [ -n "$VER_OVERRIDE" ]; then NEW_VER="$VER_OVERRIDE"; fi
+  if ver_gt "$NEW_VER" "$cur"; then
+    printf '当前版本: %s\n最新版本: %s\n说明: %s\n下载地址: %s\nmd5: %s\n' \
+      "$cur" "$NEW_VER" "${RELEASE_NOTE:-无}" "$NEW_URL" "$NEW_MD5"
+    return 10
+  fi
+  printf '当前版本: %s\n最新版本: %s\n已是最新。\n' "$cur" "$NEW_VER"
+  return 0
+}
+
+do_apply() {
+  require_prefix
+  local cur; cur="$(local_version)"
+  local pkg="$PKG_OVERRIDE" want="$VER_OVERRIDE"
+
+  if [ -z "$pkg" ]; then
+    fetch_info "$cur"
+    [ -n "$want" ] || want="$NEW_VER"
+    if ! ver_gt "$want" "$cur"; then
+      log "已是最新（$cur），无需更新"
+      return 0
+    fi
+    pkg="$HOME_ROOT/updates/DoubaoWork_win_X64_${want}.tar.zst"
+    if [ ! -s "$pkg" ]; then
+      mkdir -p "$HOME_ROOT/updates"
+      local avail_kb need_kb=3800000
+      avail_kb="$(df -Pk "$HOME_ROOT" | awk 'NR==2{print $4}')"
+      [ "${avail_kb:-0}" -ge "$need_kb" ] || die "磁盘空间不足：需要约 3.8 GB，可用 $((avail_kb/1024)) MB"
+      log "下载 $want（约 805 MB）"
+      run_clean curl -fL --retry 3 --connect-timeout 20 -C - -o "$pkg.part" "$NEW_URL" \
+        || die "下载失败：$NEW_URL"
+      mv "$pkg.part" "$pkg"
+    else
+      log "复用已下载的包：$pkg"
+    fi
+    if [ -n "$NEW_MD5" ]; then
+      local got; got="$(md5_of "$pkg")"
+      [ "$got" = "$NEW_MD5" ] || die "md5 不匹配：期望 $NEW_MD5，实际 $got"
+      log "md5 校验通过"
+    fi
+  else
+    [ -f "$pkg" ] || die "更新包不存在：$pkg"
+    [ -n "$want" ] || die "使用 --package 时必须同时给 --version"
+    pkg="$(readlink -f "$pkg")"
+    log "离线包：$pkg（目标版本 $want）"
+  fi
+
+  local staging="$APP_DIR/app.new.$$"
+  rm_rf "$staging"; mkdir -p "$staging"
+  log "解包到暂存目录"
+  tar --zstd -xf "$pkg" -C "$staging" || die "解包失败（需要 tar --zstd 与 zstd）"
+  [ -f "$staging/manifest.json" ] || die "更新包结构异常：缺少 manifest.json"
+  [ -f "$staging/DoubaoWork.exe" ] || die "更新包结构异常：缺少 DoubaoWork.exe"
+
+  if [ "$DRY_RUN" = 1 ]; then
+    log "dry-run：校验通过，未切换"
+    rm_rf "$staging"
+    return 0
+  fi
+
+  log "停止运行中的豆包工作"
+  stop_app
+
+  local old="app.old-${cur}"
+  [ -e "$APP_DIR/$old" ] && old="app.old-${cur}-$(date +%s)"
+  mv "$PAYLOAD_DIR" "$APP_DIR/$old" || die "无法移动旧版本"
+  if ! mv "$staging" "$PAYLOAD_DIR"; then
+    mv "$APP_DIR/$old" "$PAYLOAD_DIR" || true
+    die "切换失败，已回滚"
+  fi
+
+  prune_old
+  sync_registry_version "$want"
+  save_state "$want" "$cur" "update"
+  if [ "${DOUBAOWORK_KEEP_PACKAGE:-0}" != "1" ] && [ -z "$PKG_OVERRIDE" ]; then
+    python3 - "$pkg" <<'PY'
+import os, sys
+try:
+    os.remove(sys.argv[1])
+except FileNotFoundError:
+    pass
+PY
+    log "已清理下载缓存（保留可设 DOUBAOWORK_KEEP_PACKAGE=1）"
+  fi
+  log "已更新：$cur → $want（旧版本保留在 $APP_DIR/$old，可 --rollback）"
+}
+
+do_rollback() {
+  require_prefix
+  local cur; cur="$(local_version)"
+  local old
+  old="$(python3 - "$APP_DIR" <<'PY'
+import os, sys
+base = sys.argv[1]
+olds = [d for d in os.listdir(base) if d.startswith("app.old-")]
+if not olds:
+    sys.exit(1)
+print(max(olds, key=lambda d: os.path.getmtime(os.path.join(base, d))))
+PY
+)" || die "没有可回滚的旧版本"
+  log "回滚：$cur ← $old"
+  stop_app
+  local aside="app.cur-$(date +%s)"
+  mv "$PAYLOAD_DIR" "$APP_DIR/$aside"
+  mv "$APP_DIR/$old" "$PAYLOAD_DIR"
+  local back; back="$(local_version)"
+  prune_old
+  save_state "$back" "$cur" "rollback"
+  python3 - "$APP_DIR/$aside" <<'PY'
+import shutil, sys
+shutil.rmtree(sys.argv[1], ignore_errors=True)
+PY
+  sync_registry_version "$back"
+  log "已回滚到 $back"
+}
+
+do_gui() {
+  local text rc=0
+  text="$(do_check)" || rc=$?
+  local has_display=0
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && has_display=1
+  if [ "$has_display" = 1 ] && command -v zenity >/dev/null 2>&1; then
+    if [ "$rc" = 10 ]; then
+      if zenity --question --title="豆包工作" --text="$text\n\n现在更新吗？"; then
+        "$BIN_DIR/doubaowork-update" --apply
+        zenity --info --title="豆包工作" --text="更新完成" || true
+      fi
+    else
+      zenity --info --title="豆包工作" --text="$text" || true
+    fi
+  elif [ "$has_display" = 1 ] && command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "豆包工作" --msgbox "$text" || true
+  else
+    printf '%s\n' "$text"
+    [ "$rc" = 10 ] && printf '运行 doubaowork-update --apply 执行更新。\n'
+  fi
+  return 0
+}
+
+case "$ACTION" in
+  --check)    do_check ;;
+  --apply)    exec 9>"$HOME_ROOT/.update.lock"; flock -n 9 || die "另一个更新正在进行"; do_apply ;;
+  --rollback) exec 9>"$HOME_ROOT/.update.lock"; flock -n 9 || die "另一个更新正在进行"; do_rollback ;;
+  --gui)      do_gui ;;
+esac

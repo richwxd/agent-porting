@@ -10,18 +10,21 @@
 #   ./scripts/migrate.sh               构建 + 校验 + dpkg 安装（覆盖升级）
 #   ./scripts/migrate.sh --no-install  只构建 + 校验，不安装
 #   ./scripts/migrate.sh --smoke       构建 + 校验 + 安装 + 冒烟（启动与升级检测日志）
+#   ./scripts/migrate.sh --clean-cache 构建/校验/安装后清理 .migrate 与 .cache（仅留 electron/）
 set -euo pipefail
 unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT 2>/dev/null || true
 cd "$(dirname "$0")/.."
 
 INSTALL=1
 SMOKE=0
+CLEAN=0
 for a in "$@"; do
   case "$a" in
-    --no-install) INSTALL=0 ;;
-    --smoke)      SMOKE=1 ;;
-    -h|--help)    sed -n '2,12p' "$0"; exit 0 ;;
-    *) echo "未知参数: $a（支持 --no-install / --smoke）" >&2; exit 2 ;;
+    --no-install)  INSTALL=0 ;;
+    --smoke)       SMOKE=1 ;;
+    --clean-cache) CLEAN=1 ;;
+    -h|--help)     sed -n '2,13p' "$0"; exit 0 ;;
+    *) echo "未知参数: $a（支持 --no-install / --smoke / --clean-cache）" >&2; exit 2 ;;
   esac
 done
 
@@ -45,4 +48,9 @@ if [ "$INSTALL" = 1 ]; then
 else
   echo "==> 3/3 跳过安装（--no-install）"
   echo "手动安装: sudo dpkg -i $DEB"
+fi
+
+if [ "$CLEAN" = 1 ]; then
+  echo "==> 清理缓存（--clean-cache）"
+  ./scripts/clean-cache.sh
 fi

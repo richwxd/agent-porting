@@ -1,0 +1,55 @@
+#!/bin/bash
+# doubaowork — 用户级启动器（安装到 ~/.local/share/doubaowork/bin/doubaowork）
+#
+# 职责：清理宿主环境 → 在 WINEPREFIX 里启动官方 DoubaoWork.exe。
+# 不做系统级操作，不写 /opt、/usr。
+set -euo pipefail
+
+SELF_REAL="$(readlink -f "${BASH_SOURCE[0]}")"
+HOME_ROOT="$(cd "$(dirname "$SELF_REAL")/.." && pwd)"
+export DOUBAOWORK_HOME="$HOME_ROOT"
+# shellcheck disable=SC1091
+. "$HOME_ROOT/lib.sh"
+
+case "${1:-}" in
+  --version)          app_version; exit $? ;;
+  --check-update)     exec "$BIN_DIR/doubaowork-update" --check ;;
+  --check-update-gui) exec "$BIN_DIR/doubaowork-update" --gui ;;
+  --update)           exec "$BIN_DIR/doubaowork-update" --apply ;;
+  --rollback)         exec "$BIN_DIR/doubaowork-update" --rollback ;;
+  --where)            echo "$HOME_ROOT"; exit 0 ;;
+  --help|-h)
+    cat <<EOF
+用法: doubaowork [--version|--check-update|--check-update-gui|--update|--rollback|--where]
+
+  --version            打印已安装的豆包工作版本
+  --check-update       查询官方版本通道（终端输出）
+  --check-update-gui   图形化检查更新（zenity/kdialog，缺省回落终端）
+  --update             下载并应用更新（等价 doubaowork-update --apply）
+  --rollback           回滚到上一个版本
+  --where              打印安装根目录
+EOF
+    exit 0 ;;
+esac
+
+require_prefix
+quiet_pwsh_errors
+
+# 宿主环境清理：避免注入的库/变量让 Chromium 起不来
+unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT
+unset ELECTRON_RUN_AS_NODE CHROME_DEVEL_SANDBOX
+export WINEPREFIX="$PREFIX"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=}"
+export TMPDIR="${TMPDIR:-/tmp}"
+: "${DOUBAOWORK_NO_SANDBOX:=1}"
+: "${DOUBAOWORK_SOFTWARE_GL:=1}"
+
+ARGS=()
+[ "$DOUBAOWORK_NO_SANDBOX" = "1" ] && ARGS+=(--no-sandbox)
+# Wine 下 Chromium 的 GPU 合成会得到黑窗；强制软件渲染后登录页正常
+[ "$DOUBAOWORK_SOFTWARE_GL" = "1" ] && ARGS+=(--disable-gpu --disable-gpu-compositing)
+ARGS+=("$@")
+
+cd "$APP_DIR"
+exec "$(wine_exec)" DoubaoWork.exe "${ARGS[@]}"

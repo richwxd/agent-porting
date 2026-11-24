@@ -17,6 +17,7 @@ cd "$ROOT" || exit 1
 
 WIN_DIR="$ROOT/win"              # 放 商汤小浣熊-<版本>-x64.exe（NSIS 安装包）
 ELEC_CACHE="$ROOT/.cache"         # 下载/解压缓存（Electron、官方 deb、pandoc）
+ELECTRON_CACHE="$ELEC_CACHE/electron"  # Linux Electron 版本化缓存目录（见 prepare_electron）
 MIGRATE="$ROOT/.migrate"          # 中间目录
 WINAPP="$MIGRATE/winapp"          # 解包后的 Windows 应用目录（输入，长期保留）
 STAGE="$MIGRATE/stage"            # deb 打包容器（构建后清除）
@@ -204,56 +205,147 @@ resolve_versions() {
   log "   官方 deb 缓存: $(basename "$OFFICIAL_DEB")"
 }
 
-# 解压 electron-v<版本>-linux-x64.zip（项目根或 .cache，缺失则自动下载+sha 校验）
+# ───────────────────── Linux Electron：版本化缓存 ─────────────────────
+# 布局：.cache/electron/<版本>/（解压目录，含 electron 可执行）
+#       .cache/electron/electron-v<版本>-linux-x64.zip
+# 命中同名版本 → 直接复用（不联网）；版本不一致 → 删旧目录/旧压缩包后重新下载。
+
+# SHASUMS256.txt：GitHub 常超时/被劫持，npmmirror、华为云镜像兜底；结果缓存到版本目录旁。
+electron_expected_sha() {
+  local base="electron-v${ELECTRON_VERSION}-linux-x64.zip"
+  local sums="$ELECTRON_CACHE/SHASUMS256-v${ELECTRON_VERSION}.txt" sha url
+  if [ -f "$sums" ]; then
+    sha="$(grep -F "$base" "$sums" | awk '{print $1}' | head -1)"
+    [ -n "$sha" ] && { echo "$sha"; return 0; }
+    rm -f "$sums"
+  fi
+  mkdir -p "$ELECTRON_CACHE"
+  for url in \
+    "https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/SHASUMS256.txt" \
+    "https://registry.npmmirror.com/-/binary/electron/${ELECTRON_VERSION}/SHASUMS256.txt" \
+    "https://mirrors.huaweicloud.com/electron/${ELECTRON_VERSION}/SHASUMS256.txt"
+  do
+    if run_clean curl -fsSL --max-time 60 -o "$sums.tmp" "$url" 2>/dev/null; then
+      sha="$(grep -F "$base" "$sums.tmp" | awk '{print $1}' | head -1)"
+      if [ -n "$sha" ]; then
+        mv -f "$sums.tmp" "$sums"
+        echo "$sha"
+        return 0
+      fi
+    fi
+    rm -f "$sums.tmp"
+  done
+  return 1
+}
+
+# 旧布局 .cache/electron-v<版本>-linux-x64 自动搬进版本化目录（避免重复下载）
+adopt_legacy_electron() {
+  local base="$1" legacy="$ELEC_CACHE/$base" dest="$ELECTRON_CACHE/$ELECTRON_VERSION"
+  [ -x "$legacy/electron" ] || return 0
+  if [ -x "$dest/electron" ]; then
+    rm -rf "$legacy"
+  else
+    log "   迁移旧缓存 .cache/$base → .cache/electron/$ELECTRON_VERSION"
+    mkdir -p "$dest"
+    cp -a "$legacy/." "$dest/" && rm -rf "$legacy"
+  fi
+  [ -f "$ELEC_CACHE/$base.zip" ] && mv -f "$ELEC_CACHE/$base.zip" "$ELECTRON_CACHE/" || true
+}
+
+# 版本不一致时清掉旧版本缓存（当前版本目录/SHASUMS/zip 保留）
+purge_stale_electron() {
+  local keep="$ELECTRON_VERSION" e n removed=0
+  for e in "$ELECTRON_CACHE"/*; do
+    [ -e "$e" ] || continue
+    n="$(basename "$e")"
+    [ "$n" = "$keep" ] && continue
+    case "$n" in
+      SHASUMS256-v${keep}.txt) continue ;;
+      electron-v${keep}-linux-x64.zip*) continue ;;
+      [0-9]*|electron-v*.zip|SHASUMS256-v*.txt) rm -rf "$e"; removed=1 ;;
+    esac
+  done
+  [ "$removed" = 1 ] && log "   清理旧版本 Electron 缓存（当前 v$keep）"
+  return 0
+}
+
+# 解压 electron-v<版本>-linux-x64.zip（版本化缓存，缺失则自动下载+sha 校验）
 # 返回解压目录（内含可执行 electron）
 prepare_electron() {
-  mkdir -p "$ELEC_CACHE"
+  mkdir -p "$ELECTRON_CACHE"
   local base="electron-v${ELECTRON_VERSION}-linux-x64"
-  local dest="$ELEC_CACHE/$base"
+  local dest="$ELECTRON_CACHE/$ELECTRON_VERSION"
 
-  if [ ! -x "$dest/electron" ]; then
-    local zip=""
-    [ -f "$ROOT/$base.zip" ] && zip="$ROOT/$base.zip"
-    [ -z "$zip" ] && [ -f "$ELEC_CACHE/$base.zip" ] && zip="$ELEC_CACHE/$base.zip"
-    if [ -z "$zip" ]; then
-      fetch_electron_zip
-      zip="$ELEC_CACHE/$base.zip"
-    fi
-    log "解压 Linux Electron: $(basename "$zip")"
-    rm -rf "$dest" && mkdir -p "$dest"
-    run_clean unzip -oq "$zip" -d "$dest/" || die "解压 electron zip 失败"
-    # zip 保留不删：作为持久输入，.cache 解压目录被清理后仍可离线重解压
+  adopt_legacy_electron "$base"
+  purge_stale_electron
+
+  if [ -x "$dest/electron" ]; then
+    log "   复用缓存: .cache/electron/$ELECTRON_VERSION"
+    echo "$dest"
+    return 0
   fi
 
+  local zip="" c
+  for c in "$ELECTRON_CACHE/$base.zip" "$ROOT/$base.zip" "$ELEC_CACHE/$base.zip"; do
+    [ -f "$c" ] && { zip="$c"; break; }
+  done
+  if [ -n "$zip" ]; then
+    local want got
+    want="$(electron_expected_sha)" || want=""
+    if [ -n "$want" ]; then
+      got="$(sha256sum "$zip" | cut -d' ' -f1)"
+      if [ "$got" = "$want" ]; then
+        log "   已有 Electron 压缩包，sha256 校验通过: $(basename "$zip")"
+      else
+        warn "缓存压缩包 sha256 不匹配，删除后重新下载: $(basename "$zip")"
+        rm -f "$zip"; zip=""
+      fi
+    else
+      warn "无法获取 Electron v${ELECTRON_VERSION} SHASUMS256.txt，跳过校验直接使用 $(basename "$zip")"
+    fi
+  fi
+  if [ -z "$zip" ]; then
+    fetch_electron_zip
+    zip="$ELECTRON_CACHE/$base.zip"
+  fi
+  if [ "$zip" != "$ELECTRON_CACHE/$base.zip" ]; then
+    mv -f "$zip" "$ELECTRON_CACHE/$base.zip"
+    zip="$ELECTRON_CACHE/$base.zip"
+  fi
+
+  log "解压 Linux Electron: $(basename "$zip")"
+  rm -rf "$dest" && mkdir -p "$dest"
+  run_clean unzip -oq "$zip" -d "$dest/" || die "解压 electron zip 失败"
+  # zip 保留不删：作为持久输入，版本目录被清理后仍可离线重解压
   [ -x "$dest/electron" ] || die "electron zip 内未找到可执行 electron"
   echo "$dest"
 }
 
-# 下载指定版本 Electron（npmmirror 优先，GitHub 兜底；对照官方 SHASUMS256.txt 校验）
+# 下载指定版本 Electron（npmmirror 优先，华为云/GitHub 兜底；SHASUMS256 校验）
 fetch_electron_zip() {
   local base="electron-v${ELECTRON_VERSION}-linux-x64"
-  local out="$ELEC_CACHE/$base.zip" want m
-  want="$(
-    run_clean curl -fsSL --max-time 60 \
-      "https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/SHASUMS256.txt" \
-      2>/dev/null | grep -F "$base.zip" | awk '{print $1}'
-  )" || true
-  [ -n "$want" ] || die "无法获取 Electron v${ELECTRON_VERSION} SHASUMS256.txt"
+  local out="$ELECTRON_CACHE/$base.zip" want m got
+  mkdir -p "$ELECTRON_CACHE"
+  want="$(electron_expected_sha)" || want=""
+  [ -n "$want" ] || warn "Electron v${ELECTRON_VERSION} SHASUMS256.txt 所有镜像均不可用：仅记录 sha256，不做校验"
   for m in \
     "https://registry.npmmirror.com/-/binary/electron/${ELECTRON_VERSION}/$base.zip" \
     "https://mirrors.huaweicloud.com/electron/${ELECTRON_VERSION}/$base.zip" \
     "https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/$base.zip"
   do
     log "下载 Linux Electron v${ELECTRON_VERSION}: $m"
-    if run_clean curl -fL --retry 2 --max-time 1800 -o "$out" "$m" 2>/dev/null; then
-      if [ "$(sha256sum "$out" | cut -d' ' -f1)" = "$want" ]; then
-        log "   sha256 校验通过"
+    if run_clean curl -fL --retry 2 --max-time 1800 -o "$out" "$m" 2>/dev/null && [ -s "$out" ]; then
+      got="$(sha256sum "$out" | cut -d' ' -f1)"
+      if [ -z "$want" ] || [ "$got" = "$want" ]; then
+        [ -n "$want" ] && log "   sha256 校验通过"
+        printf '%s  %s\n' "$got" "$base.zip" > "$out.sha256"
         return 0
       fi
       warn "sha256 不匹配，换下一个镜像"
     fi
     rm -f "$out"
   done
+  rm -f "$out"
   die "Electron 下载失败（所有镜像）"
 }
 
@@ -379,6 +471,9 @@ repack_asar() {
   bash "$ROOT/scripts/patch-workspace-open-linux.sh" "$tree"
   # Linux：修复托盘/窗口"退出"挂起（agent-host 清理永不 resolve→close() 无超时→永不退出）
   bash "$ROOT/scripts/patch-quit-timeout-linux.sh" "$tree"
+  # 产品：首页"完善资料"入口在 cloud 构建会打开本地问卷（保存必失败）
+  # → 改走引导向导的记忆步骤，由向导按 memory-v2 status 分流 local/cloud
+  bash "$ROOT/scripts/patch-memory-questionnaire.sh" "$tree"
 
   # esbuild：Windows 包只有 win32-x64，补 Linux 二进制（tsx 跑 TS 脚本用）
   local esb="$OFFICIAL_APP/resources/node_modules/@esbuild/linux-x64"
